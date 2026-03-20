@@ -59,8 +59,10 @@ class GlobalIDManager:
         for g_id in to_delete:
             print(f"Cleaning up Global ID {g_id} (Not seen for {self.memory_limit} frames)")
             del self.global_db[g_id]
-            # Also clean up track_to_global if it's no longer active
-            # (In a real scenario, tracker itself should manage track lifecycle)
+            # Clean up track_to_global mapping for this global_id
+            keys_to_del = [k for k, v in self.track_to_global.items() if v == g_id]
+            for k in keys_to_del:
+                del self.track_to_global[k]
 
 if __name__ == "__main__":
     manager = GlobalIDManager()

@@ -12,6 +12,9 @@ import os
 import datetime
 import torch
 
+# Define base directory for absolute paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Prevent background AI threads from starving the main server loop
 torch.set_num_threads(1)
 cv2.setNumThreads(1)
@@ -41,11 +44,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Mount static directories with absolute paths for Windows reliability
-os.makedirs("plates", exist_ok=True)
-os.makedirs("alerts", exist_ok=True)
-app.mount("/plates", StaticFiles(directory=os.path.abspath("plates")), name="plates")
-app.mount("/alerts", StaticFiles(directory=os.path.abspath("alerts")), name="alerts")
+# Mount static directories with absolute paths (Standardized)
+ALERTS_DIR = os.path.join(BASE_DIR, "alerts")
+PLATES_DIR = os.path.join(BASE_DIR, "plates")
+os.makedirs(ALERTS_DIR, exist_ok=True)
+os.makedirs(PLATES_DIR, exist_ok=True)
+app.mount("/plates", StaticFiles(directory=PLATES_DIR), name="plates")
+app.mount("/alerts", StaticFiles(directory=ALERTS_DIR), name="alerts")
 
 # CORS for React frontend
 app.add_middleware(
@@ -216,6 +221,9 @@ def camera_thread(camera_id, source, frame_interval=1):
                 if frame_count % frame_interval == 0:
                     detections = pipeline.process_frame(frame)
                     active_cameras[camera_id]["detections"] = detections
+                    # Periodically clean up global ID memory (every 100 processings)
+                    if (frame_count // frame_interval) % 100 == 0:
+                        shared_global_id.cleanup(frame_count)
                 frame_count += 1
             except Exception as e:
                 print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] AI Error: {e}")

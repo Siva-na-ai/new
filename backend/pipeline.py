@@ -122,7 +122,10 @@ class Pipeline:
                 # Save alert to DB with fresh session
                 db = SessionLocal()
                 try:
-                    alert_dir = "alerts"
+                    # Use absolute path to avoid directory mismatch
+                    import os
+                    backend_dir = os.path.dirname(os.path.abspath(__file__))
+                    alert_dir = os.path.join(backend_dir, "alerts")
                     if not os.path.exists(alert_dir): os.makedirs(alert_dir)
                     img_name = f"alert_{self.camera_id}_{self.frame_count}.jpg"
                     img_path = os.path.join(alert_dir, img_name)
