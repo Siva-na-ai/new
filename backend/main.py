@@ -36,8 +36,8 @@ app = FastAPI(lifespan=lifespan)
 # Mount static directories
 os.makedirs("plates", exist_ok=True)
 os.makedirs("alerts", exist_ok=True)
-app.mount("/plates", StaticFiles(directory="plates"), name="plates")
-app.mount("/alerts", StaticFiles(directory="alerts"), name="alerts")
+app.mount("/api/plates", StaticFiles(directory="plates"), name="plates")
+app.mount("/api/alerts", StaticFiles(directory="alerts"), name="alerts")
 
 # CORS for React frontend
 app.add_middleware(
@@ -496,7 +496,7 @@ def generate_frames(camera_id, show_detections=True):
         time.sleep(0.04) # ~25 FPS
 
 @app.get("/video_feed/{camera_id}")
-async def video_feed(camera_id: int):
+async def video_feed(camera_id: int, detect: bool = True):
     # Returns a multipart stream of MJPEG frames
     def gen():
         while True:
@@ -507,7 +507,10 @@ async def video_feed(camera_id: int):
                 time.sleep(0.5)
                 continue
                 
-            frame = active_cameras[camera_id]["frame"]
+            cam_data = active_cameras[camera_id]
+            frame = cam_data.get("frame")
+            detections = cam_data.get("detections", [])
+            
             if frame is None:
                 # If camera is starting/resolving, show placeholder
                 yield (b'--frame\r\n'
@@ -515,13 +518,38 @@ async def video_feed(camera_id: int):
                 time.sleep(0.1)
                 continue
                 
-            # If we have a frame, yield it
-            # The frame stored in active_cameras is already a processed JPEG byte stream
+            # Create a copy to avoid modifying the original frame in other threads
+            display_frame = frame.copy()
+            
+            # Draw detections if requested
+            if detect and detections:
+                for det in detections:
+                    if "xyxy" in det:
+                        x1, y1, x2, y2 = det["xyxy"]
+                        label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
+                        color = (0, 255, 0) # Green for general detections
+                        
+                        # Use different colors for specific classes if desired
+                        if det.get("class_name") == "person":
+                            color = (255, 0, 0) # Blue for person
+                        
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(display_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # Encode frame to JPEG
+            ret, buffer = cv2.imencode('.jpg', display_frame)
+            if not ret:
+                time.sleep(0.01)
+                continue
+                
+            frame_bytes = buffer.tobytes()
+            
+            # Yield the MJPEG frame
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
             # Control frame rate roughly
-            time.sleep(0.01)
+            time.sleep(0.03) # ~30 FPS
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
