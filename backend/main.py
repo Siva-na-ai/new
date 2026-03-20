@@ -10,6 +10,11 @@ import time
 import json
 import os
 import datetime
+import torch
+
+# Prevent background AI threads from starving the main server loop
+torch.set_num_threads(1)
+cv2.setNumThreads(1)
 
 # Optimize FFMPEG for faster timeouts (5 seconds)
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000000"
@@ -36,11 +41,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Mount static directories
+# Mount static directories with absolute paths for Windows reliability
 os.makedirs("plates", exist_ok=True)
 os.makedirs("alerts", exist_ok=True)
-app.mount("/plates", StaticFiles(directory="plates"), name="plates")
-app.mount("/alerts", StaticFiles(directory="alerts"), name="alerts")
+app.mount("/plates", StaticFiles(directory=os.path.abspath("plates")), name="plates")
+app.mount("/alerts", StaticFiles(directory=os.path.abspath("alerts")), name="alerts")
 
 # CORS for React frontend
 app.add_middleware(
