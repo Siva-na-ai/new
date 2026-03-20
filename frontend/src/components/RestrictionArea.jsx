@@ -137,7 +137,7 @@ const RestrictionArea = () => {
               <img 
                 ref={imgRef}
                 className="stream-img" 
-                src={`http://localhost:8000/video_feed/${selectedCam.id}?detect=false`} 
+                src={`/api/video_feed/${selectedCam.id}?detect=false`} 
                 alt="stream" 
                 onLoad={(e) => setImgSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
               />

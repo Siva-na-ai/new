@@ -53,11 +53,27 @@ app.add_middleware(
 active_cameras = {}
 
 # Global AI Engine Instances
-print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Initializing AI Engines...")
 shared_detector = Detector(r"c:\Users\sivan\OneDrive - MSFT\analysis_system\weights\last_v8.pt")
 from reid import ReID
 shared_reid = ReID()
 from global_id import GlobalIDManager
+shared_global_id = GlobalIDManager()
+import easyocr
+shared_ocr = easyocr.Reader(['en'], gpu=False)
+
+# Placeholder frame for when camera is connecting
+placeholder_frame = None
+
+def get_placeholder_frame():
+    global placeholder_frame
+    if placeholder_frame is None:
+        # Create a black image with "Connecting..." text
+        img = np.zeros((720, 1280, 3), dtype=np.uint8)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(img, "Connecting to Camera...", (400, 360), font, 1.5, (255, 255, 255), 3, cv2.LINE_AA)
+        _, buffer = cv2.imencode('.jpg', img)
+        placeholder_frame = buffer.tobytes()
+    return placeholder_frame
 shared_global_id = GlobalIDManager()
 import easyocr
 shared_ocr = easyocr.Reader(['en'], gpu=False)

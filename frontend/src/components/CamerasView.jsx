@@ -12,8 +12,7 @@ const CamerasView = ({ isViewer = false }) => {
   const [editingCam, setEditingCam] = useState(null);
   const [newCam, setNewCam] = useState({ ip_address: '', place_name: '', detections: [] });
   
-  const API_HOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? '127.0.0.1:8000' : `${window.location.hostname}:8000`;
-  const API_BASE = `${window.location.protocol}//${API_HOST}`;
+  const API_BASE = '/api';
 
   const fetchCameras = () => {
     fetch('/api/cameras')
