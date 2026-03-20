@@ -364,12 +364,17 @@ def list_cameras(db: Session = Depends(get_db)):
     cameras = db.query(Camera).all()
     result = []
     for cam in cameras:
+        # If deactivated in DB, show 'No connection' immediately
+        status = "No connection"
+        if cam.is_active:
+            status = active_cameras.get(cam.id, {}).get("status", "Starting...")
+            
         result.append({
             "id": cam.id,
             "ip_address": cam.ip_address,
             "place_name": cam.place_name,
             "detections_to_run": cam.detections_to_run,
-            "status": active_cameras.get(cam.id, {}).get("status", "Inactive"),
+            "status": status,
             "is_active": cam.is_active
         })
     return result
@@ -388,6 +393,7 @@ def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
         # Stop pipeline
         if camera_id in active_cameras:
             active_cameras[camera_id]["stop"] = True
+            active_cameras[camera_id]["status"] = "No connection"
             print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} deactivated. Stopping pipeline.")
     else:
         # Start pipeline
