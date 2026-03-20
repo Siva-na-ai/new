@@ -89,10 +89,21 @@ def login(data: dict, db: Session = Depends(get_db)):
     raise HTTPException(status_code=401, detail="Security Alert: Access denied. Please verify your credentials.")
 
 
+# Global AI Engine Instances
+# ... (rest of imports)
+
+# Cache for resolved YouTube URLs to avoid re-resolving on every toggle
+# {youtube_url: {"resolved_url": url, "expires": timestamp}}
+yt_url_cache = {}
+
 def get_yt_stream_url(url):
+    now = time.time()
+    if url in yt_url_cache and yt_url_cache[url]["expires"] > now:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Using cached YT URL for: {url[:30]}...")
+        return yt_url_cache[url]["resolved_url"]
+
     if "youtube.com" in url or "youtu.be" in url:
         # Use format that is more likely to work with OpenCV/FFmpeg
-        # Limit to 720p to save bandwidth and CPU
         ydl_opts = {
             'format': 'best[ext=mp4][height<=720]/best[ext=mp4]/best', 
             'quiet': True, 
@@ -104,6 +115,8 @@ def get_yt_stream_url(url):
                 res_url = info.get('url')
                 if res_url:
                     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Resolved YT URL: {url[:30]}...")
+                    # Cache for 10 minutes
+                    yt_url_cache[url] = {"resolved_url": res_url, "expires": now + 600}
                 return res_url
             except Exception as e:
                 print(f"YT-DLP Error: {e}")
@@ -113,18 +126,33 @@ def get_yt_stream_url(url):
 def camera_thread(camera_id, source, frame_interval=1):
     try:
         pipeline = Pipeline(camera_id, shared_detector, shared_reid, shared_global_id, shared_ocr)
-        # Extract YouTube URL if needed
-        actual_source = get_yt_stream_url(source)
         
-        # Force FFMPEG backend to avoid OpenCV pattern matching errors (CAP_IMAGES)
-        # especially for complex YouTube URLs
-        cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
+        # Background resolution
+        active_cameras[camera_id]["status"] = "Resolving..."
+        actual_source = source
+        if "youtube.com" in source or "youtu.be" in source:
+            actual_source = get_yt_stream_url(source)
+            if not actual_source:
+                active_cameras[camera_id]["status"] = "YT Resolution Failed"
+                return
         
+        # Initial attempt
+        active_cameras[camera_id]["status"] = "Connecting..."
+        cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
+        
+        # If initial attempt fails and it's not a YouTube URL, try discovery
+        if not cap.isOpened() and not ("youtube.com" in source or "youtu.be" in source):
+            active_cameras[camera_id]["status"] = "Discovering Port..."
+            actual_source = find_best_url(source) or source
+            cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
+
         # Set buffer size to 1 to reduce latency
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         else:
             print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] FAILED to open source: {source[:50]}...")
+            active_cameras[camera_id]["status"] = "Connection Failed"
+            # It will enter the retry loop below
         
         frame_count = 0
         while not active_cameras[camera_id]["stop"]:
@@ -162,24 +190,18 @@ def camera_thread(camera_id, source, frame_interval=1):
             active_cameras[camera_id]["status"] = f"Error: {e}"
 
 def start_camera_pipeline(camera_id, source, frame_interval=1):
-    # Discovery again just in case (for local/IP cams)
-    best_source = source
-    if "youtube.com" not in source and "youtu.be" not in source:
-        best_source = find_best_url(source) or source
-    
     # Auto-set frame interval for YouTube if not specified
     if ("youtube.com" in source or "youtu.be" in source) and frame_interval == 1:
         frame_interval = 30
         
     if camera_id in active_cameras:
+        # Mark for stop and slightly wait for the thread to notice
         active_cameras[camera_id]["stop"] = True
-        # Don't sleep long here, the thread will check 'stop' and exit.
-        # We can just update the status.
         active_cameras[camera_id]["status"] = "Restarting..."
-        time.sleep(0.2)
+        time.sleep(0.1)
         
     active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "thread": None, "status": "Starting..."}
-    thread = threading.Thread(target=camera_thread, args=(camera_id, best_source, frame_interval), name=f"cam_{camera_id}", daemon=True)
+    thread = threading.Thread(target=camera_thread, args=(camera_id, source, frame_interval), name=f"cam_{camera_id}", daemon=True)
     active_cameras[camera_id]["thread"] = thread
     thread.start()
 
