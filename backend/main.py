@@ -73,12 +73,20 @@ def get_db():
 
 @app.post("/login")
 def login(data: dict, db: Session = Depends(get_db)):
-    username = data.get("username")
-    password = data.get("password")
-    user = db.query(User).filter(User.username == username, User.password == password).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Security Alert: Access denied.")
-    return {"status": "success", "username": user.username}
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Login attempt for user: '{username}'")
+    
+    # Simple case-insensitive match for username, case-sensitive for password
+    user = db.query(User).filter(User.username.ilike(username)).first()
+    
+    if user and user.password == password:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Login SUCCESS for user: '{username}'")
+        return {"status": "success", "username": user.username}
+    
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Login FAILED for user: '{username}'")
+    raise HTTPException(status_code=401, detail="Security Alert: Access denied. Please verify your credentials.")
 
 
 def get_yt_stream_url(url):
