@@ -47,11 +47,11 @@ const Dashboard = () => {
       fetch(`${API_BASE}/stats`).then(res => res.ok ? res.json() : Promise.reject(`Stats: ${res.status}`))
     ]).then(([alertData, checkData, camData, statData]) => {
       console.log("Dashboard Data Fetched:", { alertData, statData });
-      setAlerts(alertData);
-      setVehicleChecks(checkData);
-      setCameras(camData);
-      setStats(statData);
-      updateChart(alertData);
+      setAlerts(Array.isArray(alertData) ? alertData : []);
+      setVehicleChecks(Array.isArray(checkData) ? checkData : []);
+      setCameras(Array.isArray(camData) ? camData : []);
+      setStats(statData || { total_alerts: 0, total_vehicles: 0, active_cameras: 0 });
+      if (Array.isArray(alertData)) updateChart(alertData);
       setLastSync(new Date().toLocaleTimeString());
       setIsSyncing(false);
     }).catch(err => {
@@ -61,33 +61,38 @@ const Dashboard = () => {
   };
 
   const updateChart = (alertData) => {
-    // Group alerts by hour for the last 6 hours
-    const now = new Date();
-    const hours = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 60 * 60 * 1000);
-      hours.push(d.getHours() + ':00');
-    }
-
-    // Count alerts per hour (0 if none)
-    const counts = hours.map((h) => {
-        const hourInt = parseInt(h.split(':')[0]);
-        return alertData.filter(a => new Date(a.timestamp).getHours() === hourInt).length; 
-    });
-
-    setChartData({
-      labels: hours,
-      datasets: [
-        {
-          label: 'System Alerts',
-          data: counts,
-          borderColor: '#6366f1',
-          backgroundColor: 'rgba(99, 102, 241, 0.5)',
-          tension: 0.4,
-          fill: true
+    try {
+        if (!Array.isArray(alertData)) return;
+        // Group alerts by hour for the last 6 hours
+        const now = new Date();
+        const hours = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(now.getTime() - i * 60 * 60 * 1000);
+          hours.push(d.getHours() + ':00');
         }
-      ]
-    });
+
+        // Count alerts per hour (0 if none)
+        const counts = hours.map((h) => {
+            const hourInt = parseInt(h.split(':')[0]);
+            return alertData.filter(a => a && a.timestamp && new Date(a.timestamp).getHours() === hourInt).length; 
+        });
+
+        setChartData({
+          labels: hours,
+          datasets: [
+            {
+              label: 'System Alerts',
+              data: counts,
+              borderColor: '#6366f1',
+              backgroundColor: 'rgba(99, 102, 241, 0.5)',
+              tension: 0.4,
+              fill: true
+            }
+          ]
+        });
+    } catch (e) {
+        console.error("Chart Update Error:", e);
+    }
   };
 
   useEffect(() => {
@@ -149,13 +154,13 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {alerts.map(alert => (
+                {Array.isArray(alerts) && alerts.map(alert => (
                   <tr key={alert.id}>
                     <td>{alert.id}</td>
-                    <td><img src={`/api/alerts/${alert.image_path.split(/[\\/]/).pop()}`} width="60" style={{ borderRadius: '4px' }} alt="alert" /></td>
+                    <td><img src={`/api/alerts/${alert.image_path?.split(/[\\/]/).pop() || ''}`} width="60" style={{ borderRadius: '4px' }} alt="alert" /></td>
                     <td>{alert.camera_name}</td>
                     <td style={{ color: 'var(--primary)', fontWeight: 'bold' }}>{alert.global_id}</td>
-                    <td>{new Date(alert.timestamp).toLocaleTimeString()}</td>
+                    <td>{alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'N/A'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -177,12 +182,12 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {vehicleChecks.slice(0, 10).map(check => (
+                {Array.isArray(vehicleChecks) && vehicleChecks.slice(0, 10).map(check => (
                   <tr key={check.id}>
                     <td><span style={{ background: '#334155', padding: '4px 8px', borderRadius: '4px', fontStyle: 'monospace', fontWeight: 900 }}>{check.plate_number}</span></td>
-                    <td><img src={`/api/plates/${check.plate_image_path.split(/[\\/]/).pop()}`} width="80" style={{ borderRadius: '6px' }} alt="plate" /></td>
+                    <td><img src={`/api/plates/${check.plate_image_path?.split(/[\\/]/).pop() || ''}`} width="80" style={{ borderRadius: '6px' }} alt="plate" /></td>
                     <td>{check.camera_name}</td>
-                    <td>{new Date(check.time_in).toLocaleString()}</td>
+                    <td>{check.time_in ? new Date(check.time_in).toLocaleString() : 'N/A'}</td>
                     <td>{check.time_out ? <span style={{ color: 'var(--text-dim)' }}>Departed</span> : <span style={{ color: 'var(--success)' }}>On Premise</span>}</td>
                   </tr>
                 ))}

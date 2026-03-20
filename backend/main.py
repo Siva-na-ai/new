@@ -206,8 +206,13 @@ def camera_thread(camera_id, source, frame_interval=1):
                     current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
                     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
                     if current_pos >= total_frames - 5: # Ends within 5 frames
-                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Static video ended. Looping...")
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Static video ended. Re-opening for loop...")
+                        cap.release()
+                        cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
+                        if not cap.isOpened():
+                            cap = cv2.VideoCapture(actual_source or source)
+                        if cap.isOpened():
+                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         continue
 
                 active_cameras[camera_id]["status"] = "Retrying..."
