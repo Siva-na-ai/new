@@ -136,15 +136,22 @@ def camera_thread(camera_id, source, frame_interval=1):
                 active_cameras[camera_id]["status"] = "YT Resolution Failed"
                 return
         
-        # Initial attempt
+        # Initial attempt with FFMPEG
         active_cameras[camera_id]["status"] = "Connecting..."
         cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
         
-        # If initial attempt fails and it's not a YouTube URL, try discovery
+        # Fallback to default backend if FFMPEG fails
+        if not cap.isOpened():
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] FFMPEG failed, trying default...")
+            cap = cv2.VideoCapture(actual_source)
+
+        # If still fails and it's not a YouTube URL, try discovery
         if not cap.isOpened() and not ("youtube.com" in source or "youtu.be" in source):
             active_cameras[camera_id]["status"] = "Discovering Port..."
             actual_source = find_best_url(source) or source
             cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(actual_source)
 
         # Set buffer size to 1 to reduce latency
         if cap.isOpened():
@@ -156,14 +163,21 @@ def camera_thread(camera_id, source, frame_interval=1):
         
         frame_count = 0
         while not active_cameras[camera_id]["stop"]:
+            # Check for config reload trigger
+            if active_cameras[camera_id].get("reload_config"):
+                pipeline.reload_config()
+                active_cameras[camera_id]["reload_config"] = False
+                
             ret, frame = cap.read()
+            # ...
             if not ret:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connection failed. Retrying in 5s...")
                 active_cameras[camera_id]["status"] = "Retrying..."
                 cap.release()
                 time.sleep(5)
                 actual_source = get_yt_stream_url(source)
                 cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(actual_source or source)
                 if cap.isOpened():
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 continue
@@ -184,10 +198,14 @@ def camera_thread(camera_id, source, frame_interval=1):
                 active_cameras[camera_id]["status"] = f"AI Error: {e}"
             
         cap.release()
+        pipeline.close()
     except Exception as e:
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] CRITICAL ERROR: {e}")
         if camera_id in active_cameras:
             active_cameras[camera_id]["status"] = f"Error: {e}"
+        # Ensure cleanup on critical error
+        if 'pipeline' in locals():
+            pipeline.close()
 
 def start_camera_pipeline(camera_id, source, frame_interval=1):
     # Auto-set frame interval for YouTube if not specified
@@ -195,12 +213,26 @@ def start_camera_pipeline(camera_id, source, frame_interval=1):
         frame_interval = 30
         
     if camera_id in active_cameras:
-        # Mark for stop and slightly wait for the thread to notice
+        # Check if it's already running with the SAME source
+        # This prevents unnecessary restarts during simple detail updates (like place_name)
+        # But we still want to trigger detection reload
+        if active_cameras[camera_id].get("raw_source") == source and not active_cameras[camera_id]["stop"]:
+            active_cameras[camera_id]["reload_config"] = True
+            return
+            
+        # Mark for stop
         active_cameras[camera_id]["stop"] = True
         active_cameras[camera_id]["status"] = "Restarting..."
-        time.sleep(0.1)
         
-    active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "thread": None, "status": "Starting..."}
+    active_cameras[camera_id] = {
+        "stop": False, 
+        "frame": None, 
+        "detections": [], 
+        "thread": None, 
+        "status": "Starting...",
+        "raw_source": source,
+        "reload_config": False
+    }
     thread = threading.Thread(target=camera_thread, args=(camera_id, source, frame_interval), name=f"cam_{camera_id}", daemon=True)
     active_cameras[camera_id]["thread"] = thread
     thread.start()
@@ -242,11 +274,8 @@ def update_camera(camera_id: int, ip_address: str, place_name: str, detections: 
     cam.detections_to_run = det_list
     db.commit()
     
-    # Restart pipeline with original URL (thread handles the yt-dlp resolution)
-    if camera_id in active_cameras:
-        active_cameras[camera_id]["stop"] = True
-        time.sleep(1)
-        start_camera_pipeline(camera_id, ip_address)
+    # Restart pipeline (non-blocking)
+    start_camera_pipeline(camera_id, ip_address)
         
     return cam
 

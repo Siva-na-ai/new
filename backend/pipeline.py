@@ -190,5 +190,10 @@ class Pipeline:
                 
                 self.db.commit()
 
+    def close(self):
+        """Explicitly close the database session"""
+        if self.db:
+            self.db.close()
+
     def __del__(self):
-        self.db.close()
+        self.close()
