@@ -36,8 +36,8 @@ app = FastAPI(lifespan=lifespan)
 # Mount static directories
 os.makedirs("plates", exist_ok=True)
 os.makedirs("alerts", exist_ok=True)
-app.mount("/api/plates", StaticFiles(directory="plates"), name="plates")
-app.mount("/api/alerts", StaticFiles(directory="alerts"), name="alerts")
+app.mount("/plates", StaticFiles(directory="plates"), name="plates")
+app.mount("/alerts", StaticFiles(directory="alerts"), name="alerts")
 
 # CORS for React frontend
 app.add_middleware(
@@ -223,7 +223,7 @@ def camera_thread(camera_id, source, frame_interval=1):
         if 'pipeline' in locals():
             pipeline.close()
 
-def start_camera_pipeline(camera_id, source, frame_interval=1):
+def start_camera_pipeline(camera_id, source, frame_interval=5):
     # Normalize source to ensure reliable comparison
     source = source.strip()
     
@@ -497,14 +497,15 @@ def generate_frames(camera_id, show_detections=True):
 
 @app.get("/video_feed/{camera_id}")
 async def video_feed(camera_id: int, detect: bool = True):
+    import anyio
     # Returns a multipart stream of MJPEG frames
-    def gen():
+    async def gen():
         while True:
             # Check if camera exists in active list
             if camera_id not in active_cameras:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                time.sleep(0.5)
+                await anyio.sleep(0.5)
                 continue
                 
             cam_data = active_cameras[camera_id]
@@ -515,7 +516,7 @@ async def video_feed(camera_id: int, detect: bool = True):
                 # If camera is starting/resolving, show placeholder
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                time.sleep(0.1)
+                await anyio.sleep(0.1)
                 continue
                 
             # Create a copy to avoid modifying the original frame in other threads
@@ -539,7 +540,7 @@ async def video_feed(camera_id: int, detect: bool = True):
             # Encode frame to JPEG
             ret, buffer = cv2.imencode('.jpg', display_frame)
             if not ret:
-                time.sleep(0.01)
+                await anyio.sleep(0.01)
                 continue
                 
             frame_bytes = buffer.tobytes()
@@ -549,7 +550,7 @@ async def video_feed(camera_id: int, detect: bool = True):
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
             # Control frame rate roughly
-            time.sleep(0.03) # ~30 FPS
+            await anyio.sleep(0.03) # ~30 FPS
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 

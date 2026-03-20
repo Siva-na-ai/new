@@ -16,7 +16,6 @@ class Pipeline:
         self.global_id_manager = global_id_manager
         self.ocr_reader = ocr_reader
         self.frame_count = 0
-        self.db = SessionLocal()
         self.camera = None
         self.camera_name = f"Cam_{camera_id}"
         self.zones = []
@@ -28,24 +27,24 @@ class Pipeline:
     def reload_config(self):
         """Reload camera settings and restricted zones from DB"""
         from database import RestrictionZone
+        db = SessionLocal()
         try:
-            # Ensure session sees latest data from other threads
-            self.db.expire_all()
-            
             # Refresh camera settings
-            self.camera = self.db.query(Camera).filter(Camera.id == self.camera_id).first()
+            self.camera = db.query(Camera).filter(Camera.id == self.camera_id).first()
             if self.camera:
                 self.camera_name = self.camera.place_name
             else:
                 self.camera_name = f"Cam_{self.camera_id}"
             
             # Refresh zones (only if active)
-            self.zones = self.db.query(RestrictionZone).filter(
+            self.zones = db.query(RestrictionZone).filter(
                 RestrictionZone.camera_id == self.camera_id
             ).all()
             
         except Exception as e:
             print(f"[PIPELINE ERROR] Failed to reload config for Cam {self.camera_id}: {e}")
+        finally:
+            db.close()
 
     def process_frame(self, frame):
         self.frame_count += 1
@@ -166,34 +165,37 @@ class Pipeline:
                 cv2.imwrite(img_path, plate_crop)
                 
                 # Update DB (Check if time_in or time_out)
-                now = datetime.datetime.now()
-                existing = self.db.query(VehicleCheck).filter(
-                    VehicleCheck.plate_number == plate_text,
-                    VehicleCheck.time_out == None
-                ).first()
-                
-                if existing:
-                    # If seen after > 10 sec (for testing/demo persistence)
-                    if (now - existing.time_in).total_seconds() > 10: 
-                        existing.time_out = now
-                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Updated Checkout for {plate_text}")
-                else:
-                    new_check = VehicleCheck(
-                        plate_image_path=img_path,
-                        plate_number=plate_text,
-                        camera_id=self.camera_id,
-                        camera_name=self.camera_name,
-                        time_in=now
-                    )
-                    self.db.add(new_check)
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] New Check-in for {plate_text}")
-                
-                self.db.commit()
+                db = SessionLocal()
+                try:
+                    now = datetime.datetime.now()
+                    existing = db.query(VehicleCheck).filter(
+                        VehicleCheck.plate_number == plate_text,
+                        VehicleCheck.time_out == None
+                    ).first()
+                    
+                    if existing:
+                        # If seen after > 10 sec (for testing/demo persistence)
+                        if (now - existing.time_in).total_seconds() > 10: 
+                            existing.time_out = now
+                            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Updated Checkout for {plate_text}")
+                    else:
+                        new_check = VehicleCheck(
+                            plate_image_path=img_path,
+                            plate_number=plate_text,
+                            camera_id=self.camera_id,
+                            camera_name=self.camera_name,
+                            time_in=now
+                        )
+                        db.add(new_check)
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] New Check-in for {plate_text}")
+                    
+                    db.commit()
+                except Exception as e:
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] VEHICLE DB ERROR: {e}")
+                    db.rollback()
+                finally:
+                    db.close()
 
     def close(self):
-        """Explicitly close the database session"""
-        if self.db:
-            self.db.close()
-
-    def __del__(self):
-        self.close()
+        """Explicitly close the database session (No-op after refactor)"""
+        pass
