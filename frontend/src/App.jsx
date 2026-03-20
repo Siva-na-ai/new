@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react'
-import { LayoutDashboard, Camera, ShieldAlert, LogOut, Plus, MapPin, Search, Youtube, Activity, History, Lock } from 'lucide-react'
+import React, { useState } from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Activity, Search, Lock } from 'lucide-react'
+import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import CamerasView from './components/CamerasView'
 import RestrictionArea from './components/RestrictionArea'
@@ -8,7 +10,6 @@ import EntryLogs from './components/EntryLogs'
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('vision_auth') === 'true');
-  const [activeTab, setActiveTab] = useState('dashboard');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loggedUser, setLoggedUser] = useState(localStorage.getItem('vision_user') || '');
@@ -33,6 +34,12 @@ function App() {
     .catch(err => {
       alert(err.message);
     });
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('vision_auth');
+    localStorage.removeItem('vision_user');
+    setIsLoggedIn(false);
   };
 
   if (!isLoggedIn) {
@@ -81,54 +88,21 @@ function App() {
   }
 
   return (
-    <div className="app-container">
-      <div className="sidebar">
-        <div className="logo">
-          <Activity size={28} color="#6366f1" />
-          <span>V-SHIELD AI</span>
-        </div>
-        
-        <div className="nav-group">
-          <div className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
-            <LayoutDashboard size={20} /> Dashboard
-          </div>
-          <div className={`nav-item ${activeTab === 'cameras' ? 'active' : ''}`} onClick={() => setActiveTab('cameras')}>
-            <Camera size={20} /> Manage Cams
-          </div>
-          <div className={`nav-item ${activeTab === 'view' ? 'active' : ''}`} onClick={() => setActiveTab('view')}>
-            <Search size={20} /> Live Viewer
-          </div>
-          <div className={`nav-item ${activeTab === 'zones' ? 'active' : ''}`} onClick={() => setActiveTab('zones')}>
-            <ShieldAlert size={20} /> Restriction Area
-          </div>
-          <div className={`nav-item ${activeTab === 'youtube' ? 'active' : ''}`} onClick={() => setActiveTab('youtube')}>
-            <Youtube size={20} /> YouTube Monitoring
-          </div>
-          <div className={`nav-item ${activeTab === 'entry_logs' ? 'active' : ''}`} onClick={() => setActiveTab('entry_logs')}>
-            <History size={20} /> Entry Logs
-          </div>
-        </div>
-
-        <div style={{ marginTop: 'auto' }}>
-          <div className="nav-item" onClick={() => {
-            localStorage.removeItem('vision_auth');
-            localStorage.removeItem('vision_user');
-            setIsLoggedIn(false);
-          }}>
-            <LogOut size={20} /> Logout ({loggedUser})
-          </div>
-        </div>
-      </div>
-
-      <div className="main-content">
-        {activeTab === 'dashboard' && <Dashboard />}
-        {activeTab === 'cameras' && <CamerasView />}
-        {activeTab === 'view' && <CamerasView isViewer />}
-        {activeTab === 'zones' && <RestrictionArea />}
-        {activeTab === 'youtube' && <YoutubeView />}
-        {activeTab === 'entry_logs' && <EntryLogs />}
-      </div>
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout loggedUser={loggedUser} onLogout={handleLogout} />}>
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/cameras" element={<CamerasView />} />
+          <Route path="/viewer" element={<CamerasView isViewer />} />
+          <Route path="/zones" element={<RestrictionArea />} />
+          <Route path="/youtube" element={<YoutubeView />} />
+          <Route path="/logs" element={<EntryLogs />} />
+        </Route>
+        {/* Redirect unknown routes */}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
