@@ -129,7 +129,11 @@ class Pipeline:
                     if not os.path.exists(alert_dir): os.makedirs(alert_dir)
                     img_name = f"alert_{self.camera_id}_{self.frame_count}.jpg"
                     img_path = os.path.join(alert_dir, img_name)
-                    cv2.imwrite(img_path, frame)
+                    success = cv2.imwrite(img_path, frame)
+                    if not success:
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] CRITICAL: FAILED to write alert image to {img_path}")
+                    else:
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Alert Image Saved: {img_path}")
                     
                     new_alert = Alert(
                         track_id=detection["track_id"],

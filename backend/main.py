@@ -14,6 +14,7 @@ import torch
 
 # Define base directory for absolute paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] SYSTEM STARTING. BASE_DIR: {BASE_DIR}")
 
 # Prevent background AI threads from starving the main server loop
 torch.set_num_threads(1)
@@ -578,4 +579,4 @@ async def video_feed(camera_id: int, detect: bool = True):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
