@@ -208,15 +208,18 @@ def camera_thread(camera_id, source, frame_interval=1):
             pipeline.close()
 
 def start_camera_pipeline(camera_id, source, frame_interval=1):
+    # Normalize source to ensure reliable comparison
+    source = source.strip()
+    
     # Auto-set frame interval for YouTube if not specified
     if ("youtube.com" in source or "youtu.be" in source) and frame_interval == 1:
         frame_interval = 30
         
     if camera_id in active_cameras:
         # Check if it's already running with the SAME source
-        # This prevents unnecessary restarts during simple detail updates (like place_name)
-        # But we still want to trigger detection reload
+        # This prevents unnecessary restarts during simple detail updates (like place_name or detections)
         if active_cameras[camera_id].get("raw_source") == source and not active_cameras[camera_id]["stop"]:
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Source unchanged, triggering config reload instead of restart.")
             active_cameras[camera_id]["reload_config"] = True
             return
             
@@ -241,6 +244,7 @@ def start_camera_pipeline(camera_id, source, frame_interval=1):
 
 @app.post("/cameras")
 def add_camera(ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+    ip_address = ip_address.strip()
     # detections is expected as comma-separated IDs or a JSON list
     try:
         det_list = [int(i.strip()) for i in detections.split(",")]
@@ -248,7 +252,6 @@ def add_camera(ip_address: str, place_name: str, detections: str, db: Session = 
         det_list = [0, 1, 2, 3, 4] # Default
         
     # Store the ORIGINAL ip_address in DB so frontend filtering works
-    # and the pipeline can re-resolve YouTube URLs if they expire.
     new_cam = Camera(ip_address=ip_address, place_name=place_name, detections_to_run=det_list)
     db.add(new_cam)
     db.commit()
@@ -259,6 +262,7 @@ def add_camera(ip_address: str, place_name: str, detections: str, db: Session = 
 
 @app.put("/cameras/{camera_id}")
 def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+    ip_address = ip_address.strip()
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
@@ -274,7 +278,7 @@ def update_camera(camera_id: int, ip_address: str, place_name: str, detections: 
     cam.detections_to_run = det_list
     db.commit()
     
-    # Restart pipeline (non-blocking)
+    # Restart pipeline (non-blocking) - start_camera_pipeline will handle smart skip if source is same
     start_camera_pipeline(camera_id, ip_address)
         
     return cam
@@ -476,10 +480,34 @@ def generate_frames(camera_id, show_detections=True):
         time.sleep(0.04) # ~25 FPS
 
 @app.get("/video_feed/{camera_id}")
-def video_feed(camera_id: int, detect: bool = True):
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Stream Request: Cam {camera_id} (detect={detect})")
-    return StreamingResponse(generate_frames(camera_id, detect),
-                             media_type="multipart/x-mixed-replace; boundary=frame")
+async def video_feed(camera_id: int):
+    # Returns a multipart stream of MJPEG frames
+    def gen():
+        while True:
+            # Check if camera exists in active list
+            if camera_id not in active_cameras:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                time.sleep(0.5)
+                continue
+                
+            frame = active_cameras[camera_id]["frame"]
+            if frame is None:
+                # If camera is starting/resolving, show placeholder
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                time.sleep(0.1)
+                continue
+                
+            # If we have a frame, yield it
+            # The frame stored in active_cameras is already a processed JPEG byte stream
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            
+            # Control frame rate roughly
+            time.sleep(0.01)
+            
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 if __name__ == "__main__":
     import uvicorn
