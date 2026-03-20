@@ -1,0 +1,22 @@
+# Root .gitignore
+# Exclude weights and system scripts as requested (only frontend and backend)
+weights/
+run.bat
+
+# Standard excludes for JS/React
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Standard excludes for Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Editor files
+.vscode/
+.idea/
+.DS_Store

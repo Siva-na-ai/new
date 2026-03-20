@@ -1,0 +1,415 @@
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body
+from typing import Optional
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
+import cv2
+import threading
+import time
+import json
+import os
+import datetime
+from database import SessionLocal, init_db, Camera, RestrictionZone, Alert, VehicleCheck, User
+from pipeline import Pipeline
+from detector import Detector
+from contextlib import asynccontextmanager
+import yt_dlp
+import numpy as np
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    # Resume active cameras from DB
+    db = SessionLocal()
+    cameras = db.query(Camera).filter(Camera.is_active == True).all()
+    for cam in cameras:
+        start_camera_pipeline(cam.id, cam.ip_address)
+    db.close()
+    yield
+    # Shutdown
+    for cam_id in active_cameras:
+        active_cameras[cam_id]["stop"] = True
+
+app = FastAPI(lifespan=lifespan)
+
+# Mount static directories
+os.makedirs("plates", exist_ok=True)
+os.makedirs("alerts", exist_ok=True)
+app.mount("/plates", StaticFiles(directory="plates"), name="plates")
+app.mount("/alerts", StaticFiles(directory="alerts"), name="alerts")
+
+# CORS for React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global dictionary to store active pipelines and their latest frames
+# {camera_id: {"pipeline": Pipeline, "frame": frame, "detections": detections, "stop": False}}
+active_cameras = {}
+
+# Global AI Engine Instances
+print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Initializing AI Engines...")
+shared_detector = Detector(r"c:\Users\sivan\OneDrive - MSFT\analysis_system\weights\last_v8.pt")
+from reid import ReID
+shared_reid = ReID()
+from global_id import GlobalIDManager
+shared_global_id = GlobalIDManager()
+import easyocr
+shared_ocr = easyocr.Reader(['en'], gpu=False)
+print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] AI Engines Ready.")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@app.post("/login")
+def login(data: dict, db: Session = Depends(get_db)):
+    username = data.get("username")
+    password = data.get("password")
+    user = db.query(User).filter(User.username == username, User.password == password).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Security Alert: Access denied.")
+    return {"status": "success", "username": user.username}
+
+
+def get_yt_stream_url(url):
+    if "youtube.com" in url or "youtu.be" in url:
+        # Use format that is more likely to work with OpenCV/FFmpeg
+        # Limit to 720p to save bandwidth and CPU
+        ydl_opts = {
+            'format': 'best[ext=mp4][height<=720]/best[ext=mp4]/best', 
+            'quiet': True, 
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                res_url = info.get('url')
+                if res_url:
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Resolved YT URL: {url[:30]}...")
+                return res_url
+            except Exception as e:
+                print(f"YT-DLP Error: {e}")
+                return None
+    return url
+
+def camera_thread(camera_id, source, frame_interval=1):
+    try:
+        pipeline = Pipeline(camera_id, shared_detector, shared_reid, shared_global_id, shared_ocr)
+        # Extract YouTube URL if needed
+        actual_source = get_yt_stream_url(source)
+        cap = cv2.VideoCapture(actual_source or source)
+        # Set buffer size to 1 to reduce latency
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        frame_count = 0
+        while not active_cameras[camera_id]["stop"]:
+            ret, frame = cap.read()
+            if not ret:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connection failed. Retrying in 5s...")
+                active_cameras[camera_id]["status"] = "Retrying..."
+                cap.release()
+                time.sleep(5)
+                actual_source = get_yt_stream_url(source)
+                cap = cv2.VideoCapture(actual_source or source)
+                continue
+                
+            active_cameras[camera_id]["status"] = "Active"
+            active_cameras[camera_id]["frame_id"] = active_cameras[camera_id].get("frame_id", 0) + 1
+            # Update raw frame immediately for fast streaming
+            active_cameras[camera_id]["frame"] = frame.copy()
+            
+            try:
+                # Process 1 frame every frame_interval
+                if frame_count % frame_interval == 0:
+                    detections = pipeline.process_frame(frame)
+                    active_cameras[camera_id]["detections"] = detections
+                frame_count += 1
+            except Exception as e:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] AI Error: {e}")
+                active_cameras[camera_id]["status"] = f"AI Error: {e}"
+            
+        cap.release()
+    except Exception as e:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] CRITICAL ERROR: {e}")
+        if camera_id in active_cameras:
+            active_cameras[camera_id]["status"] = f"Error: {e}"
+
+def start_camera_pipeline(camera_id, source, frame_interval=1):
+    # Discovery again just in case (for local/IP cams)
+    best_source = source
+    if "youtube.com" not in source and "youtu.be" not in source:
+        best_source = find_best_url(source) or source
+    
+    # Auto-set frame interval for YouTube if not specified
+    if ("youtube.com" in source or "youtu.be" in source) and frame_interval == 1:
+        frame_interval = 30
+        
+    if camera_id in active_cameras:
+        active_cameras[camera_id]["stop"] = True
+        time.sleep(1)
+        
+    active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "thread": None, "status": "Starting..."}
+    thread = threading.Thread(target=camera_thread, args=(camera_id, best_source, frame_interval), name=f"cam_{camera_id}", daemon=True)
+    active_cameras[camera_id]["thread"] = thread
+    thread.start()
+
+# API Endpoints
+
+@app.post("/cameras")
+def add_camera(ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+    # detections is expected as comma-separated IDs or a JSON list
+    try:
+        det_list = [int(i.strip()) for i in detections.split(",")]
+    except:
+        det_list = [0, 1, 2, 3, 4] # Default
+        
+    # Store the ORIGINAL ip_address in DB so frontend filtering works
+    # and the pipeline can re-resolve YouTube URLs if they expire.
+    new_cam = Camera(ip_address=ip_address, place_name=place_name, detections_to_run=det_list)
+    db.add(new_cam)
+    db.commit()
+    db.refresh(new_cam)
+    
+    start_camera_pipeline(new_cam.id, ip_address)
+    return new_cam
+
+@app.put("/cameras/{camera_id}")
+def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
+    
+    try:
+        det_list = [int(i.strip()) for i in detections.split(",")]
+    except:
+        det_list = cam.detections_to_run
+        
+    # Store ORIGINAL in DB
+    cam.ip_address = ip_address
+    cam.place_name = place_name
+    cam.detections_to_run = det_list
+    db.commit()
+    
+    # Restart pipeline with original URL (thread handles the yt-dlp resolution)
+    if camera_id in active_cameras:
+        active_cameras[camera_id]["stop"] = True
+        time.sleep(1)
+        start_camera_pipeline(camera_id, ip_address)
+        
+    return cam
+
+@app.delete("/cameras/{camera_id}")
+def delete_camera(camera_id: int, db: Session = Depends(get_db)):
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
+    
+    # Stop pipeline
+    if camera_id in active_cameras:
+        active_cameras[camera_id]["stop"] = True
+        # The thread will exit on next loop
+        
+    db.delete(cam)
+    db.commit()
+    return {"status": "success"}
+
+def find_best_url(url):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Test Connection Request: {url[:50]}...")
+    # YouTube handling
+    if "youtube.com" in url or "youtu.be" in url:
+        yt_url = get_yt_stream_url(url)
+        if yt_url:
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] YouTube Success: {url[:30]}")
+            return yt_url
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] YouTube FAILED to resolve")
+        return None
+
+    # Try as is
+    cap = cv2.VideoCapture(url)
+    if cap.isOpened():
+        ret, _ = cap.read()
+        cap.release()
+        if ret: return url
+    
+    # Try prepending http://
+    if not url.startswith(('http://', 'https://', 'rtsp://')):
+        test_url = 'http://' + url
+        cap = cv2.VideoCapture(test_url)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            cap.release()
+            if ret: return test_url
+            
+        # Try common suffixes
+        for suffix in ['/video', '/shot.jpg', '/stream', '/live']:
+            test_url = 'http://' + url.rstrip('/') + suffix
+            cap = cv2.VideoCapture(test_url)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                cap.release()
+                if ret: return test_url
+            
+    return None
+
+@app.get("/test_camera")
+def test_camera(ip_address: str):
+    best_url = find_best_url(ip_address)
+    if best_url:
+        return {"status": "success", "url": best_url}
+    return {"status": "error", "message": "Could not connect to camera. Try adding http:// or check if /video is needed."}
+
+@app.get("/cameras")
+def list_cameras(db: Session = Depends(get_db)):
+    cameras = db.query(Camera).all()
+    result = []
+    for cam in cameras:
+        result.append({
+            "id": cam.id,
+            "ip_address": cam.ip_address,
+            "place_name": cam.place_name,
+            "detections_to_run": cam.detections_to_run,
+            "status": active_cameras.get(cam.id, {}).get("status", "Inactive"),
+            "is_active": cam.is_active
+        })
+    return result
+
+@app.post("/cameras-toggle/{camera_id}")
+def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] TOGGLE REQUEST RECEIVED for Cam {camera_id}")
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
+    
+    cam.is_active = not cam.is_active
+    db.commit()
+    
+    if not cam.is_active:
+        # Stop pipeline
+        if camera_id in active_cameras:
+            active_cameras[camera_id]["stop"] = True
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} deactivated. Stopping pipeline.")
+    else:
+        # Start pipeline
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} activated. Starting pipeline.")
+        start_camera_pipeline(camera_id, cam.ip_address)
+        
+    return {"is_active": cam.is_active}
+
+@app.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    total_alerts = db.query(Alert).count()
+    total_vehicles = db.query(VehicleCheck).count()
+    active_count = len([c for c in active_cameras.values() if not c.get("stop")])
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Stats Requested: Alerts={total_alerts}, Vehicles={total_vehicles}, ActiveCams={active_count}")
+    return {
+        "total_alerts": total_alerts,
+        "total_vehicles": total_vehicles,
+        "active_cameras": active_count
+    }
+
+@app.post("/zones")
+def add_zone(camera_id: int, points: list = Body(...), activation_time: Optional[str] = None, db: Session = Depends(get_db)):
+    # points format: [[x,y], [x,y], ...]
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Adding Zone for Cam {camera_id}: {len(points)} points")
+    parsed_time = None
+    if activation_time:
+        try:
+            parsed_time = datetime.datetime.fromisoformat(activation_time)
+        except:
+            pass
+            
+    try:
+        new_zone = RestrictionZone(camera_id=camera_id, polygon_points=points, activation_time=parsed_time)
+        db.add(new_zone)
+        db.commit()
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Zone Saved Successfully.")
+        return {"status": "Zone added"}
+    except Exception as e:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] ZONE DB ERROR: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/alerts")
+def get_alerts(db: Session = Depends(get_db)):
+    return db.query(Alert).order_by(Alert.timestamp.desc()).limit(50).all()
+
+@app.get("/vehicle-checks")
+def get_vehicle_checks(db: Session = Depends(get_db)):
+    return db.query(VehicleCheck).order_by(VehicleCheck.time_in.desc()).limit(50).all()
+
+@app.get("/zones/{camera_id}")
+def get_zones(camera_id: int, db: Session = Depends(get_db)):
+    return db.query(RestrictionZone).filter(RestrictionZone.camera_id == camera_id).all()
+
+@app.delete("/zones/{zone_id}")
+def delete_zone(zone_id: int, db: Session = Depends(get_db)):
+    zone = db.query(RestrictionZone).filter(RestrictionZone.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Resource Unavailable: Restricted zone ID not registered.")
+    camera_id = zone.camera_id
+    db.delete(zone)
+    db.commit()
+    return {"status": "Zone deleted"}
+
+def generate_frames(camera_id, show_detections=True):
+    while True:
+        # Check if camera exists
+        if camera_id not in active_cameras:
+            # Generate a black "Unknown Camera" frame
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(frame, f"Unknown Camera ID: {camera_id}", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        elif active_cameras[camera_id]["frame"] is None:
+            # Generate a "Connecting..." frame
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            status = active_cameras[camera_id].get("status", "Starting...")
+            cv2.putText(frame, f"CAM {camera_id}: {status}", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(frame, "Waiting for stream...", (50, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        else:
+            frame = active_cameras[camera_id]["frame"].copy()
+            status = active_cameras[camera_id].get("status", "Active")
+            fid = active_cameras[camera_id].get("frame_id", 0)
+            
+            if show_detections:
+                detections = active_cameras[camera_id]["detections"]
+                for det in detections:
+                    x1, y1, x2, y2 = det["xyxy"]
+                    color = (0, 255, 0) # Green
+                    label = f"{det['class_name']} {det.get('global_id', '')}"
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+            # Add status overlay at the bottom (ALWAYS SHOW)
+            overlay_text = f"CAM {camera_id} | {status} | FID:{fid} | {datetime.datetime.now().strftime('%H:%M:%S')}"
+            # Draw a small background for better visibility
+            cv2.rectangle(frame, (5, frame.shape[0] - 25), (450, frame.shape[0] - 5), (0, 0, 0), -1)
+            cv2.putText(frame, overlay_text, (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+        ret, buffer = cv2.imencode('.jpg', frame)
+        if not ret:
+            time.sleep(0.1)
+            continue
+            
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        time.sleep(0.04) # ~25 FPS
+
+@app.get("/video_feed/{camera_id}")
+def video_feed(camera_id: int, detect: bool = True):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Stream Request: Cam {camera_id} (detect={detect})")
+    return StreamingResponse(generate_frames(camera_id, detect),
+                             media_type="multipart/x-mixed-replace; boundary=frame")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
