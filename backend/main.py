@@ -126,9 +126,9 @@ def login(data: dict, db: Session = Depends(get_db)):
 # {youtube_url: {"resolved_url": url, "expires": timestamp}}
 yt_url_cache = {}
 
-def get_yt_stream_url(url):
+def get_yt_stream_url(url, force_refresh=False):
     now = time.time()
-    if url in yt_url_cache and yt_url_cache[url]["expires"] > now:
+    if not force_refresh and url in yt_url_cache and yt_url_cache[url]["expires"] > now:
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Using cached YT URL for: {url[:30]}...")
         return yt_url_cache[url]["resolved_url"]
 
@@ -201,10 +201,20 @@ def camera_thread(camera_id, source, frame_interval=1):
             ret, frame = cap.read()
             # ...
             if not ret:
+                # Check if it's a static video that just ended (loop it)
+                if cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
+                    current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    if current_pos >= total_frames - 5: # Ends within 5 frames
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Static video ended. Looping...")
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
+
                 active_cameras[camera_id]["status"] = "Retrying..."
                 cap.release()
                 time.sleep(5)
-                actual_source = get_yt_stream_url(source)
+                # Force refresh YT URL in case it's expired
+                actual_source = get_yt_stream_url(source, force_refresh=True)
                 cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
                     cap = cv2.VideoCapture(actual_source or source)
