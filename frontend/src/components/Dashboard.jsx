@@ -152,7 +152,7 @@ const Dashboard = () => {
                 {alerts.map(alert => (
                   <tr key={alert.id}>
                     <td>{alert.id}</td>
-                    <td><img src={`/api/alerts/${alert.image_path.split('/').pop()}`} width="60" style={{ borderRadius: '4px' }} alt="alert" /></td>
+                    <td><img src={`/api/alerts/${alert.image_path.split(/[\\/]/).pop()}`} width="60" style={{ borderRadius: '4px' }} alt="alert" /></td>
                     <td>{alert.camera_name}</td>
                     <td style={{ color: 'var(--primary)', fontWeight: 'bold' }}>{alert.global_id}</td>
                     <td>{new Date(alert.timestamp).toLocaleTimeString()}</td>
@@ -180,7 +180,7 @@ const Dashboard = () => {
                 {vehicleChecks.slice(0, 10).map(check => (
                   <tr key={check.id}>
                     <td><span style={{ background: '#334155', padding: '4px 8px', borderRadius: '4px', fontStyle: 'monospace', fontWeight: 900 }}>{check.plate_number}</span></td>
-                    <td><img src={`/api/plates/${check.plate_image_path.split('/').pop()}`} width="80" style={{ borderRadius: '6px' }} alt="plate" /></td>
+                    <td><img src={`/api/plates/${check.plate_image_path.split(/[\\/]/).pop()}`} width="80" style={{ borderRadius: '6px' }} alt="plate" /></td>
                     <td>{check.camera_name}</td>
                     <td>{new Date(check.time_in).toLocaleString()}</td>
                     <td>{check.time_out ? <span style={{ color: 'var(--text-dim)' }}>Departed</span> : <span style={{ color: 'var(--success)' }}>On Premise</span>}</td>

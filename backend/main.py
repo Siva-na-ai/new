@@ -10,6 +10,9 @@ import time
 import json
 import os
 import datetime
+
+# Optimize FFMPEG for faster timeouts (5 seconds)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000000"
 from database import SessionLocal, init_db, Camera, RestrictionZone, Alert, VehicleCheck, User
 from pipeline import Pipeline
 from detector import Detector
