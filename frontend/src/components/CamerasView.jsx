@@ -47,14 +47,19 @@ const CamerasView = ({ isViewer = false }) => {
 
   const handleSaveCamera = (e) => {
     e.preventDefault();
-    const url = editingCam 
+    const isEdit = !!editingCam;
+    const url = isEdit 
       ? `/api/cameras/${editingCam.id}?ip_address=${newCam.ip_address}&place_name=${newCam.place_name}&detections=${newCam.detections.join(',')}`
       : `/api/cameras?ip_address=${newCam.ip_address}&place_name=${newCam.place_name}&detections=${newCam.detections.join(',')}`;
     
-    fetch(url, { method: editingCam ? 'PUT' : 'POST' })
+    fetch(url, { method: isEdit ? 'PUT' : 'POST' })
     .then(res => res.json())
-    .then(() => {
-      fetchCameras();
+    .then(savedCam => {
+      if (isEdit) {
+        setCameras(prev => prev.map(c => c.id === savedCam.id ? { ...c, ...savedCam } : c));
+      } else {
+        setCameras(prev => [...prev, savedCam]);
+      }
       setShowAddModal(false);
       setEditingCam(null);
       setTestStatus(null);
@@ -66,13 +71,17 @@ const CamerasView = ({ isViewer = false }) => {
     if (!window.confirm('System Confirmation: Proceed with the permanent removal of this surveillance endpoint from the active registry?')) return;
     fetch(`/api/cameras/${id}`, { method: 'DELETE' })
       .then(res => res.json())
-      .then(() => fetchCameras());
+      .then(() => {
+        setCameras(prev => prev.filter(c => c.id !== id));
+      });
   };
 
   const handleToggle = (id) => {
     fetch(`/api/cameras-toggle/${id}`, { method: 'POST' })
       .then(res => res.json())
-      .then(() => fetchCameras());
+      .then(data => {
+        setCameras(prev => prev.map(c => c.id === id ? { ...c, is_active: data.is_active } : c));
+      });
   };
 
   const handleEdit = (cam) => {

@@ -115,9 +115,16 @@ def camera_thread(camera_id, source, frame_interval=1):
         pipeline = Pipeline(camera_id, shared_detector, shared_reid, shared_global_id, shared_ocr)
         # Extract YouTube URL if needed
         actual_source = get_yt_stream_url(source)
-        cap = cv2.VideoCapture(actual_source or source)
+        
+        # Force FFMPEG backend to avoid OpenCV pattern matching errors (CAP_IMAGES)
+        # especially for complex YouTube URLs
+        cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
+        
         # Set buffer size to 1 to reduce latency
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] FAILED to open source: {source[:50]}...")
         
         frame_count = 0
         while not active_cameras[camera_id]["stop"]:
@@ -128,7 +135,9 @@ def camera_thread(camera_id, source, frame_interval=1):
                 cap.release()
                 time.sleep(5)
                 actual_source = get_yt_stream_url(source)
-                cap = cv2.VideoCapture(actual_source or source)
+                cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 continue
                 
             active_cameras[camera_id]["status"] = "Active"
@@ -164,7 +173,10 @@ def start_camera_pipeline(camera_id, source, frame_interval=1):
         
     if camera_id in active_cameras:
         active_cameras[camera_id]["stop"] = True
-        time.sleep(1)
+        # Don't sleep long here, the thread will check 'stop' and exit.
+        # We can just update the status.
+        active_cameras[camera_id]["status"] = "Restarting..."
+        time.sleep(0.2)
         
     active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "thread": None, "status": "Starting..."}
     thread = threading.Thread(target=camera_thread, args=(camera_id, best_source, frame_interval), name=f"cam_{camera_id}", daemon=True)
@@ -242,8 +254,8 @@ def find_best_url(url):
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] YouTube FAILED to resolve")
         return None
 
-    # Try as is
-    cap = cv2.VideoCapture(url)
+    # Try as is with FFMPEG
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if cap.isOpened():
         ret, _ = cap.read()
         cap.release()
@@ -252,7 +264,7 @@ def find_best_url(url):
     # Try prepending http://
     if not url.startswith(('http://', 'https://', 'rtsp://')):
         test_url = 'http://' + url
-        cap = cv2.VideoCapture(test_url)
+        cap = cv2.VideoCapture(test_url, cv2.CAP_FFMPEG)
         if cap.isOpened():
             ret, _ = cap.read()
             cap.release()
@@ -261,7 +273,7 @@ def find_best_url(url):
         # Try common suffixes
         for suffix in ['/video', '/shot.jpg', '/stream', '/live']:
             test_url = 'http://' + url.rstrip('/') + suffix
-            cap = cv2.VideoCapture(test_url)
+            cap = cv2.VideoCapture(test_url, cv2.CAP_FFMPEG)
             if cap.isOpened():
                 ret, _ = cap.read()
                 cap.release()
