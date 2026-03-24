@@ -1,0 +1,10 @@
+@echo off
+title Backend Server (Safe Loop)
+:loop
+echo [%time%] Starting Backend Server...
+python main.py
+echo.
+echo [%time%] Backend process exited or crashed.
+echo Restarting in 5 seconds (Press Ctrl+C to stop)...
+timeout /t 5
+goto loop

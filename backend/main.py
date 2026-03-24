@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body
-from typing import Optional
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body, UploadFile, File
+import httpx
+from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+import shutil
 from sqlalchemy.orm import Session
 import cv2
 import threading
@@ -11,6 +13,10 @@ import json
 import os
 import datetime
 import torch
+import anyio
+import yt_dlp
+import redis
+import json
 
 # Define base directory for absolute paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,8 +26,10 @@ print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] SYSTEM STARTING. BASE_D
 torch.set_num_threads(1)
 cv2.setNumThreads(1)
 
-# Optimize FFMPEG for faster timeouts (5 seconds)
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000000"
+# Optimize FFMPEG for resilience and faster timeouts
+# reconnect: reconnect on failure, reconnect_streamed: for network streams, probesize/analyzeduration: handle slow starts
+# Using '|' as separator and ':' for key-value (more robust for some OpenCV/FFmpeg builds)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "reconnect:1|reconnect_streamed:1|reconnect_delay_max:5|timeout:5000000|probesize:5000000|analyzeduration:5000000"
 from database import SessionLocal, init_db, Camera, RestrictionZone, Alert, VehicleCheck, User
 from pipeline import Pipeline
 from detector import Detector
@@ -32,13 +40,28 @@ import numpy as np
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # Resume active cameras from DB
-    db = SessionLocal()
-    cameras = db.query(Camera).filter(Camera.is_active == True).all()
-    for cam in cameras:
-        start_camera_pipeline(cam.id, cam.ip_address)
-    db.close()
+    
+    async def start_all_cameras():
+        # Resume active cameras from DB in background
+        db = SessionLocal()
+        try:
+            cameras = db.query(Camera).filter(Camera.is_active == True).all()
+            for cam in cameras:
+                # We use asyncio.create_task to make it truly non-blocking inside this sub-task
+                asyncio.create_task(start_camera_pipeline(cam.id, cam.ip_address))
+        finally:
+            db.close()
+
+    # Start camera initialization without blocking server startup
+    import asyncio
+    asyncio.create_task(start_all_cameras())
+    
+    # Start sync task in background
+    app.state.sync_job = asyncio.create_task(sync_worker_task())
+    
     yield
+    # Shutdown
+    app.state.sync_job.cancel()
     # Shutdown
     for cam_id in active_cameras:
         active_cameras[cam_id]["stop"] = True
@@ -48,10 +71,45 @@ app = FastAPI(lifespan=lifespan)
 # Mount static directories with absolute paths (Standardized)
 ALERTS_DIR = os.path.join(BASE_DIR, "alerts")
 PLATES_DIR = os.path.join(BASE_DIR, "plates")
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(ALERTS_DIR, exist_ok=True)
 os.makedirs(PLATES_DIR, exist_ok=True)
-app.mount("/plates", StaticFiles(directory=PLATES_DIR), name="plates")
-app.mount("/alerts", StaticFiles(directory=ALERTS_DIR), name="alerts")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount("/api/media/plates", StaticFiles(directory=PLATES_DIR), name="plates")
+app.mount("/api/media/alerts", StaticFiles(directory=ALERTS_DIR), name="alerts")
+app.mount("/api/media/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+# Mount custom alarms folder
+ALARAM_DIR = os.path.join(os.path.dirname(BASE_DIR), "alaram")
+os.makedirs(ALARAM_DIR, exist_ok=True)
+app.mount("/alaram", StaticFiles(directory=ALARAM_DIR), name="alaram")
+
+@app.get("/alarm-sound")
+@app.head("/alarm-sound")
+def get_alarm_sound():
+    sound_file = os.path.join(ALARAM_DIR, "clip-1773994393607.mp3")
+    if os.path.exists(sound_file):
+        return FileResponse(sound_file, media_type="audio/mpeg")
+    return {"error": "Sound file not found"}
+
+@app.post("/upload-video")
+async def upload_video(file: UploadFile = File(...)):
+    try:
+        # Generate a unique path for the video
+        filename = f"upload-{int(datetime.datetime.now().timestamp())}-{file.filename}"
+        file_path = os.path.join(UPLOADS_DIR, filename)
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        return JSONResponse({
+            "status": "success",
+            "filename": filename,
+            "path": file_path, # Absolute path for OpenCV
+            "url": f"/uploads/{filename}"
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 # CORS for React frontend
 app.add_middleware(
@@ -62,18 +120,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global dictionary to store active pipelines and their latest frames
-# {camera_id: {"pipeline": Pipeline, "frame": frame, "detections": detections, "stop": False}}
+# Global dictionary to store active pipelines and their latest status
 active_cameras = {}
 
-# Global AI Engine Instances
-shared_detector = Detector(r"c:\Users\sivan\OneDrive - MSFT\analysis_system\weights\last_v8.pt")
-from reid import ReID
-shared_reid = ReID()
-from global_id import GlobalIDManager
-shared_global_id = GlobalIDManager()
-import easyocr
-shared_ocr = easyocr.Reader(['en'], gpu=False)
+# Redis Client for Frame Retrieval
+r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
 
 # Placeholder frame for when camera is connecting
 placeholder_frame = None
@@ -81,16 +132,23 @@ placeholder_frame = None
 def get_placeholder_frame():
     global placeholder_frame
     if placeholder_frame is None:
-        # Create a black image with "Connecting..." text
         img = np.zeros((720, 1280, 3), dtype=np.uint8)
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(img, "Connecting to Camera...", (400, 360), font, 1.5, (255, 255, 255), 3, cv2.LINE_AA)
         _, buffer = cv2.imencode('.jpg', img)
         placeholder_frame = buffer.tobytes()
     return placeholder_frame
-shared_global_id = GlobalIDManager()
-import easyocr
-shared_ocr = easyocr.Reader(['en'], gpu=False)
+
+def get_ended_frame():
+    img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(img, "STREAM ENDED / FINISHED", (350, 360), font, 1.5, (0, 255, 255), 3, cv2.LINE_AA)
+    cv2.putText(img, "Please reload to watch again", (450, 420), font, 0.8, (200, 200, 200), 1, cv2.LINE_AA)
+    _, buffer = cv2.imencode('.jpg', img)
+    return buffer.tobytes()
+
+# API Server NO LONGER loads Detector/ReID/OCR to save memory and CPU
+# shared_detector, shared_reid, shared_ocr moved to worker.py
 print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] AI Engines Ready.")
 
 def get_db():
@@ -101,7 +159,7 @@ def get_db():
         db.close()
 
 
-@app.post("/login")
+@app.post("/api/login")
 def login(data: dict, db: Session = Depends(get_db)):
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
@@ -119,8 +177,8 @@ def login(data: dict, db: Session = Depends(get_db)):
     raise HTTPException(status_code=401, detail="Security Alert: Access denied. Please verify your credentials.")
 
 
-# Global AI Engine Instances
-# ... (rest of imports)
+
+
 
 # Cache for resolved YouTube URLs to avoid re-resolving on every toggle
 # {youtube_url: {"resolved_url": url, "expires": timestamp}}
@@ -153,145 +211,72 @@ def get_yt_stream_url(url, force_refresh=False):
                 return None
     return url
 
-def camera_thread(camera_id, source, frame_interval=1):
-    try:
-        pipeline = Pipeline(camera_id, shared_detector, shared_reid, shared_global_id, shared_ocr)
-        
-        # Background resolution
-        active_cameras[camera_id]["status"] = "Resolving..."
-        actual_source = source
-        if "youtube.com" in source or "youtu.be" in source:
-            actual_source = get_yt_stream_url(source)
-            if not actual_source:
-                active_cameras[camera_id]["status"] = "YT Resolution Failed"
-                return
-        
-        # Initial attempt with FFMPEG
-        active_cameras[camera_id]["status"] = "Connecting..."
-        cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
-        
-        # Fallback to default backend if FFMPEG fails
-        if not cap.isOpened():
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] FFMPEG failed, trying default...")
-            cap = cv2.VideoCapture(actual_source)
-
-        # If still fails and it's not a YouTube URL, try discovery
-        if not cap.isOpened() and not ("youtube.com" in source or "youtu.be" in source):
-            active_cameras[camera_id]["status"] = "Discovering Port..."
-            actual_source = find_best_url(source) or source
-            cap = cv2.VideoCapture(actual_source, cv2.CAP_FFMPEG)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(actual_source)
-
-        # Set buffer size to 1 to reduce latency
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        else:
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] FAILED to open source: {source[:50]}...")
-            active_cameras[camera_id]["status"] = "Connection Failed"
-            # It will enter the retry loop below
-        
-        frame_count = 0
-        while not active_cameras[camera_id]["stop"]:
-            # Check for config reload trigger
-            if active_cameras[camera_id].get("reload_config"):
-                pipeline.reload_config()
-                active_cameras[camera_id]["reload_config"] = False
-                
-            ret, frame = cap.read()
-            # ...
-            if not ret:
-                # Check if it's a static video that just ended (loop it)
-                if cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
-                    current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
-                    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                    if current_pos >= total_frames - 5: # Ends within 5 frames
-                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Static video ended. Re-opening for loop...")
-                        cap.release()
-                        cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
-                        if not cap.isOpened():
-                            cap = cv2.VideoCapture(actual_source or source)
-                        if cap.isOpened():
-                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        continue
-
-                active_cameras[camera_id]["status"] = "Retrying..."
-                cap.release()
-                time.sleep(5)
-                # Force refresh YT URL in case it's expired
-                actual_source = get_yt_stream_url(source, force_refresh=True)
-                cap = cv2.VideoCapture(actual_source or source, cv2.CAP_FFMPEG)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(actual_source or source)
-                if cap.isOpened():
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                continue
-                
-            active_cameras[camera_id]["status"] = "Active"
-            active_cameras[camera_id]["frame_id"] = active_cameras[camera_id].get("frame_id", 0) + 1
-            # Update raw frame immediately for fast streaming
-            active_cameras[camera_id]["frame"] = frame.copy()
-            
-            try:
-                # Process 1 frame every frame_interval
-                if frame_count % frame_interval == 0:
-                    detections = pipeline.process_frame(frame)
-                    active_cameras[camera_id]["detections"] = detections
-                    # Periodically clean up global ID memory (every 100 processings)
-                    if (frame_count // frame_interval) % 100 == 0:
-                        shared_global_id.cleanup(frame_count)
-                frame_count += 1
-            except Exception as e:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] AI Error: {e}")
-                active_cameras[camera_id]["status"] = f"AI Error: {e}"
-            
-        cap.release()
-        pipeline.close()
-    except Exception as e:
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] CRITICAL ERROR: {e}")
-        if camera_id in active_cameras:
-            active_cameras[camera_id]["status"] = f"Error: {e}"
-        # Ensure cleanup on critical error
-        if 'pipeline' in locals():
-            pipeline.close()
-
-def start_camera_pipeline(camera_id, source, frame_interval=5):
-    # Normalize source to ensure reliable comparison
-    source = source.strip()
+async def start_camera_pipeline(camera_id, source):
+    """Notify the Analysis Worker (Port 8001) to start processing with retry logic"""
+    active_cameras[camera_id] = {"status": "Starting...", "stop": False}
     
-    # Auto-set frame interval for YouTube if not specified
-    if ("youtube.com" in source or "youtu.be" in source) and frame_interval == 1:
-        frame_interval = 30
+    # Retry up to 10 times (Worker takes time to load AI models)
+    for i in range(12): 
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(f"http://127.0.0.1:8001/start/{camera_id}", json={"source": source}, timeout=5.0)
+                if resp.status_code == 200:
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Success: Started Worker for Cam {camera_id}")
+                    active_cameras[camera_id]["status"] = "Active"
+                    return
+        except Exception as e:
+            if i % 3 == 0: # Log every 3rd failure to keep console clean
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Waiting for Worker... (Attempt {i+1}/12)")
         
+        await anyio.sleep(5) # Wait 5s between retries
+        
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] CRITICAL: Could not reach Worker for Cam {camera_id}")
+    active_cameras[camera_id]["status"] = "Worker Offline"
+
+async def stop_camera_pipeline(camera_id):
+    """Notify the Analysis Worker (Port 8001) to stop processing"""
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"http://127.0.0.1:8001/stop/{camera_id}", timeout=5.0)
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Stopped Worker for Cam {camera_id}")
+    except Exception as e:
+        print(f"Worker Communication Error (Stop): {e}")
+    
     if camera_id in active_cameras:
-        # Check if it's already running with the SAME source
-        # This prevents unnecessary restarts during simple detail updates (like place_name or detections)
-        if active_cameras[camera_id].get("raw_source") == source and not active_cameras[camera_id]["stop"]:
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Source unchanged, triggering config reload instead of restart.")
-            active_cameras[camera_id]["reload_config"] = True
-            return
-            
-        # Mark for stop
         active_cameras[camera_id]["stop"] = True
-        active_cameras[camera_id]["status"] = "Restarting..."
-        
-    active_cameras[camera_id] = {
-        "stop": False, 
-        "frame": None, 
-        "detections": [], 
-        "thread": None, 
-        "status": "Starting...",
-        "raw_source": source,
-        "reload_config": False
-    }
-    thread = threading.Thread(target=camera_thread, args=(camera_id, source, frame_interval), name=f"cam_{camera_id}", daemon=True)
-    active_cameras[camera_id]["thread"] = thread
-    thread.start()
+        active_cameras[camera_id]["status"] = "No connection"
+
+async def sync_worker_task():
+    """Background task to ensure Worker is always in sync with DB"""
+    print("[SYNC] Background Sync Task Started.")
+    while True:
+        try:
+            db = SessionLocal()
+            active_db_cams = db.query(Camera).filter(Camera.is_active == True).all()
+            db.close()
+            
+            async with httpx.AsyncClient() as client:
+                try:
+                    resp = await client.get("http://127.0.0.1:8001/status", timeout=2.0)
+                    if resp.status_code == 200:
+                        worker_ids = resp.json().get("active_cameras", [])
+                        for cam in active_db_cams:
+                            if cam.id not in worker_ids:
+                                print(f"[SYNC] Worker missing active Cam {cam.id}. Syncing...")
+                                import asyncio
+                                asyncio.create_task(start_camera_pipeline(cam.id, cam.ip_address))
+                except:
+                    # Worker offline, start_camera_pipeline logic will handle retries if called
+                    pass
+        except Exception as e:
+            print(f"[SYNC ERROR] {e}")
+            
+        await anyio.sleep(30) # Check every 30s
 
 # API Endpoints
 
-@app.post("/cameras")
-def add_camera(ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+@app.post("/api/cameras")
+async def add_camera(ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
     ip_address = ip_address.strip()
     # detections is expected as comma-separated IDs or a JSON list
     try:
@@ -305,11 +290,11 @@ def add_camera(ip_address: str, place_name: str, detections: str, db: Session = 
     db.commit()
     db.refresh(new_cam)
     
-    start_camera_pipeline(new_cam.id, ip_address)
+    await start_camera_pipeline(new_cam.id, ip_address)
     return new_cam
 
-@app.put("/cameras/{camera_id}")
-def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+@app.put("/api/cameras/{camera_id}")
+async def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
     ip_address = ip_address.strip()
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
@@ -327,24 +312,29 @@ def update_camera(camera_id: int, ip_address: str, place_name: str, detections: 
     db.commit()
     
     # Restart pipeline (non-blocking) - start_camera_pipeline will handle smart skip if source is same
-    start_camera_pipeline(camera_id, ip_address)
+    await start_camera_pipeline(camera_id, ip_address)
         
     return cam
 
-@app.delete("/cameras/{camera_id}")
-def delete_camera(camera_id: int, db: Session = Depends(get_db)):
+@app.delete("/api/cameras/{camera_id}")
+async def delete_camera(camera_id: int, db: Session = Depends(get_db)):
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
     
-    # Stop pipeline
-    if camera_id in active_cameras:
-        active_cameras[camera_id]["stop"] = True
-        # The thread will exit on next loop
+    try:
+        # Stop pipeline in Worker
+        await stop_camera_pipeline(camera_id)
         
-    db.delete(cam)
-    db.commit()
-    return {"status": "success"}
+        # We no longer delete dependent records manually. 
+        # The database is configured with ON DELETE SET NULL to preserve them.
+        db.delete(cam)
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] DELETE ERROR Cam {camera_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"System Error: Could not delete camera. {str(e)}")
 
 def find_best_url(url):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Test Connection Request: {url[:50]}...")
@@ -384,14 +374,14 @@ def find_best_url(url):
             
     return None
 
-@app.get("/test_camera")
+@app.get("/api/test_camera")
 def test_camera(ip_address: str):
     best_url = find_best_url(ip_address)
     if best_url:
         return {"status": "success", "url": best_url}
     return {"status": "error", "message": "Could not connect to camera. Try adding http:// or check if /video is needed."}
 
-@app.get("/cameras")
+@app.get("/api/cameras")
 def list_cameras(db: Session = Depends(get_db)):
     cameras = db.query(Camera).all()
     result = []
@@ -411,8 +401,8 @@ def list_cameras(db: Session = Depends(get_db)):
         })
     return result
 
-@app.post("/cameras-toggle/{camera_id}")
-def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
+@app.post("/api/cameras-toggle/{camera_id}")
+async def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] TOGGLE REQUEST RECEIVED for Cam {camera_id}")
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
@@ -422,19 +412,16 @@ def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     if not cam.is_active:
-        # Stop pipeline
-        if camera_id in active_cameras:
-            active_cameras[camera_id]["stop"] = True
-            active_cameras[camera_id]["status"] = "No connection"
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} deactivated. Stopping pipeline.")
+        # Stop pipeline in Worker
+        await stop_camera_pipeline(camera_id)
     else:
-        # Start pipeline
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} activated. Starting pipeline.")
-        start_camera_pipeline(camera_id, cam.ip_address)
+        # Start pipeline in Worker
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} activated. Starting Worker...")
+        await start_camera_pipeline(camera_id, cam.ip_address)
         
     return {"is_active": cam.is_active}
 
-@app.get("/stats")
+@app.get("/api/stats")
 def get_stats(db: Session = Depends(get_db)):
     total_alerts = db.query(Alert).count()
     total_vehicles = db.query(VehicleCheck).count()
@@ -446,7 +433,7 @@ def get_stats(db: Session = Depends(get_db)):
         "active_cameras": active_count
     }
 
-@app.post("/zones")
+@app.post("/api/zones")
 def add_zone(camera_id: int, points: list = Body(...), activation_time: Optional[str] = None, db: Session = Depends(get_db)):
     # points format: [[x,y], [x,y], ...]
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Adding Zone for Cam {camera_id}: {len(points)} points")
@@ -468,19 +455,19 @@ def add_zone(camera_id: int, points: list = Body(...), activation_time: Optional
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts")
+@app.get("/api/alerts")
 def get_alerts(db: Session = Depends(get_db)):
-    return db.query(Alert).order_by(Alert.timestamp.desc()).limit(50).all()
+    return db.query(Alert).order_by(Alert.timestamp.desc()).limit(30).all()
 
-@app.get("/vehicle-checks")
+@app.get("/api/vehicles")
 def get_vehicle_checks(db: Session = Depends(get_db)):
-    return db.query(VehicleCheck).order_by(VehicleCheck.time_in.desc()).limit(50).all()
+    return db.query(VehicleCheck).order_by(VehicleCheck.time_in.desc()).limit(30).all()
 
-@app.get("/zones/{camera_id}")
+@app.get("/api/zones/{camera_id}")
 def get_zones(camera_id: int, db: Session = Depends(get_db)):
     return db.query(RestrictionZone).filter(RestrictionZone.camera_id == camera_id).all()
 
-@app.delete("/zones/{zone_id}")
+@app.delete("/api/zones/{zone_id}")
 def delete_zone(zone_id: int, db: Session = Depends(get_db)):
     zone = db.query(RestrictionZone).filter(RestrictionZone.id == zone_id).first()
     if not zone:
@@ -540,54 +527,60 @@ async def video_feed(camera_id: int, detect: bool = True):
     async def gen():
         while True:
             # Check if camera exists in active list
-            if camera_id not in active_cameras:
+            if camera_id not in active_cameras or active_cameras[camera_id].get("stop"):
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
                 await anyio.sleep(0.5)
                 continue
                 
-            cam_data = active_cameras[camera_id]
-            frame = cam_data.get("frame")
-            detections = cam_data.get("detections", [])
-            
-            if frame is None:
-                # If camera is starting/resolving, show placeholder
+            # --- REDIS-BASED FRAME RETRIEVAL ---
+            try:
+                # 1. Pull Latest Frame from Redis
+                frame_bytes = r.get(f"camera:{camera_id}:frame")
+                
+                if frame_bytes is None:
+                    # If Redis is empty, show placeholder
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                    await anyio.sleep(0.1)
+                    continue
+                
+                # 2. Pull Detections from Redis (for drawing)
+                if detect:
+                    dets_raw = r.get(f"camera:{camera_id}:detections")
+                    if dets_raw:
+                        try:
+                            detections = json.loads(dets_raw.decode('utf-8'))
+                            # If we need to DRAW them on the API side, we'd need to decode the JPEG.
+                            # BUT: It's better to draw them on the Worker side OR have the frontend draw them.
+                            # Current implementation in main.py was drawing them.
+                            # To keep it simple and fast, we'll let the Worker do the drawing IF requested,
+                            # OR we decode here. Let's decode here to maintain existing main.py behavior.
+                            
+                            image = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+                            for det in detections:
+                                x1, y1, x2, y2 = det["xyxy"]
+                                label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
+                                color = (0, 255, 0)
+                                if det.get("class_name") == "person": color = (255, 0, 0)
+                                cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                                cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            
+                            _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                            frame_bytes = buffer.tobytes()
+                        except Exception as e:
+                            print(f"Drawing error in main.py: {e}")
+                
+                # 3. Yield the MJPEG frame
                 yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                
+            except Exception as e:
+                print(f"Redis retrieval error Cam {camera_id}: {e}")
                 await anyio.sleep(0.1)
                 continue
-                
-            # Create a copy to avoid modifying the original frame in other threads
-            display_frame = frame.copy()
             
-            # Draw detections if requested
-            if detect and detections:
-                for det in detections:
-                    if "xyxy" in det:
-                        x1, y1, x2, y2 = det["xyxy"]
-                        label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
-                        color = (0, 255, 0) # Green for general detections
-                        
-                        # Use different colors for specific classes if desired
-                        if det.get("class_name") == "person":
-                            color = (255, 0, 0) # Blue for person
-                        
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(display_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-            # Encode frame to JPEG
-            ret, buffer = cv2.imencode('.jpg', display_frame)
-            if not ret:
-                await anyio.sleep(0.01)
-                continue
-                
-            frame_bytes = buffer.tobytes()
-            
-            # Yield the MJPEG frame
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
-            # Control frame rate roughly
+            # Control frame rate
             await anyio.sleep(0.03) # ~30 FPS
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")

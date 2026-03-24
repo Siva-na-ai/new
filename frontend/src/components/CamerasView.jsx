@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Check, Play, Settings, Trash2, Power, PowerOff } from 'lucide-react'
+import { Plus, Check, Play, Settings, Trash2, Power, PowerOff, Monitor } from 'lucide-react'
 
 const DETECTION_CLASSES = [
   "box_opened", "box_closed", "person", "forklift", "collision", "helmet", "no_helmet", "no_vest", "vest", "license_plate", "truck_covered", "truck_not_covered", "person_not_working", "person_standing", "person_working"
@@ -13,6 +13,7 @@ const CamerasView = ({ isViewer = false }) => {
   const [newCam, setNewCam] = useState({ ip_address: '', place_name: '', detections: [] });
   
   const API_BASE = '/api';
+  const WORKER_BASE = `http://${window.location.hostname}:8001`;
 
   const fetchCameras = () => {
     fetch('/api/cameras')
@@ -48,8 +49,8 @@ const CamerasView = ({ isViewer = false }) => {
     e.preventDefault();
     const isEdit = !!editingCam;
     const url = isEdit 
-      ? `/api/cameras/${editingCam.id}?ip_address=${newCam.ip_address}&place_name=${newCam.place_name}&detections=${newCam.detections.join(',')}`
-      : `/api/cameras?ip_address=${newCam.ip_address}&place_name=${newCam.place_name}&detections=${newCam.detections.join(',')}`;
+      ? `/api/cameras/${editingCam.id}?ip_address=${encodeURIComponent(newCam.ip_address)}&place_name=${encodeURIComponent(newCam.place_name)}&detections=${encodeURIComponent(newCam.detections.join(','))}`
+      : `/api/cameras?ip_address=${encodeURIComponent(newCam.ip_address)}&place_name=${encodeURIComponent(newCam.place_name)}&detections=${encodeURIComponent(newCam.detections.join(','))}`;
     
     fetch(url, { method: isEdit ? 'PUT' : 'POST' })
     .then(res => res.json())
@@ -88,7 +89,9 @@ const CamerasView = ({ isViewer = false }) => {
     setNewCam({ 
       ip_address: cam.ip_address, 
       place_name: cam.place_name, 
-      detections: cam.detections_to_run || [] 
+      detections: typeof cam.detections_to_run === 'string' 
+        ? cam.detections_to_run.split(',').filter(x => x).map(Number) 
+        : (Array.isArray(cam.detections_to_run) ? cam.detections_to_run : [])
     });
     setShowAddModal(true);
   };
@@ -165,31 +168,48 @@ const CamerasView = ({ isViewer = false }) => {
                   </div>
                 )}
               </div>
-
-              <div className="stream-container">
-                <img className="stream-img" src={`${API_BASE}/video_feed/${cam.id}?detect=false&t=${timestamp}`} alt="normal stream" />
-              </div>
+              {isViewer ? (
+                <div className="stream-container" style={{ position: 'relative' }}>
+                  <img 
+                    key={`${cam.id}-${cam.showDetect || false}`}
+                    className="stream-img" 
+                    src={`${WORKER_BASE}/video_feed/${cam.id}?detect=${cam.showDetect || false}&t=${timestamp}`} 
+                    alt="stream" 
+                  />
+                  <button 
+                    onClick={() => {
+                      setCameras(prev => prev.map(c => c.id === cam.id ? {...c, showDetect: !c.showDetect} : c));
+                    }}
+                    style={{
+                      position: 'absolute',
+                      top: '10px',
+                      right: '10px',
+                      padding: '6px 12px',
+                      fontSize: '12px',
+                      borderRadius: '20px',
+                      background: cam.showDetect ? 'var(--success)' : 'rgba(0,0,0,0.5)',
+                      color: 'white',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      backdropFilter: 'blur(5px)',
+                      cursor: 'pointer',
+                      zIndex: 10
+                    }}
+                  >
+                    {cam.showDetect ? "AI On" : "AI Off"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ 
+                  height: '180px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', 
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexDirection: 'column', gap: '8px', color: 'var(--text-dim)',
+                  border: '1px dashed rgba(255,255,255,0.1)'
+                }}>
+                  <Monitor size={32} opacity={0.3} />
+                  <span style={{ fontSize: '12px' }}>Streaming disabled in Management Mode</span>
+                </div>
+              )}
             </div>
-
-            {/* Detection View Card (Only in Viewer Mode) */}
-            {isViewer && (
-              <div className="glass-card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                  <div>
-                    <h4 style={{ fontSize: '18px' }}>{cam.place_name} (Detection)</h4>
-                    <p style={{ fontSize: '12px', color: 'var(--text-dim)' }}>Analytical Stream</p>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)' }}></span>
-                    <span style={{ fontSize: '12px' }}>AI Live</span>
-                  </div>
-                </div>
-
-                <div className="stream-container">
-                  <img className="stream-img" src={`${API_BASE}/video_feed/${cam.id}?detect=true&t=${timestamp}`} alt="detection stream" />
-                </div>
-              </div>
-            )}
           </React.Fragment>
         ))}
       </div>

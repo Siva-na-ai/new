@@ -53,10 +53,32 @@ const RestrictionArea = () => {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
+    // 1. Draw Existing Zones (Blue)
+    if (existingZones && existingZones.length > 0) {
+      existingZones.forEach(zone => {
+        const zp = zone.polygon_points;
+        if (zp.length > 2) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#3b82f6'; // Blue for existing
+          ctx.lineWidth = 2;
+          ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
+          
+          ctx.moveTo(zp[0][0], zp[0][1]);
+          zp.forEach((p, i) => {
+            if (i > 0) ctx.lineTo(p[0], p[1]);
+          });
+          ctx.closePath();
+          ctx.stroke();
+          ctx.fill();
+        }
+      });
+    }
+
+    // 2. Draw Current Points (New Polygon - Red)
     if (points.length === 0) return;
     
     ctx.beginPath();
-    ctx.strokeStyle = '#f43f5e';
+    ctx.strokeStyle = '#f43f5e'; // Red for new
     ctx.lineWidth = 3;
     ctx.fillStyle = 'rgba(244, 63, 94, 0.3)';
     
@@ -80,7 +102,7 @@ const RestrictionArea = () => {
 
   useEffect(() => {
     drawPolygon();
-  }, [points]);
+  }, [points, existingZones, imgSize]);
 
   const handleSubmitZone = () => {
     fetch(`/api/zones?camera_id=${selectedCam.id}&activation_time=${activationTime}`, {
@@ -137,7 +159,7 @@ const RestrictionArea = () => {
               <img 
                 ref={imgRef}
                 className="stream-img" 
-                src={`/api/video_feed/${selectedCam.id}?detect=false`} 
+                src={`http://${window.location.hostname}:8001/video_feed/${selectedCam.id}?detect=false`} 
                 alt="stream" 
                 onLoad={(e) => setImgSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
               />

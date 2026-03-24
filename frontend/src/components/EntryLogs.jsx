@@ -6,16 +6,18 @@ const EntryLogs = () => {
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
-    fetch('/api/vehicle-checks')
+    fetch('/api/api-vehicles')
       .then(res => res.json())
-      .then(data => setLogs(data))
+      .then(data => setLogs(Array.isArray(data) ? data : []))
       .catch(err => console.error(err));
   }, []);
 
-  const filteredLogs = logs.filter(log => 
-    log.plate_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.camera_name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredLogs = logs.filter(log => {
+    const plate = (log.plate_number || "").toLowerCase();
+    const camera = (log.camera_name || "").toLowerCase();
+    const search = searchTerm.toLowerCase();
+    return plate.includes(search) || camera.includes(search);
+  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
@@ -48,63 +50,74 @@ const EntryLogs = () => {
       </div>
 
       <div className="glass-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Plate Number</th>
-              <th>Reference Image</th>
-              <th>Camera Location</th>
-              <th>Entry Time</th>
-              <th>Exit Time</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredLogs.map(log => (
-              <tr key={log.id}>
-                <td>
-                  <span style={{ 
-                    background: '#1e293b', 
-                    color: 'white',
-                    padding: '6px 12px', 
-                    borderRadius: '6px', 
-                    fontFamily: 'monospace', 
-                    fontWeight: 900,
-                    border: '2px solid #334155',
-                    fontSize: '16px'
-                  }}>
-                    {log.plate_number}
-                  </span>
-                </td>
-                <td>
-                  <img 
-                    src={`http://localhost:8000/plates/${log.plate_image_path.split('/').pop()}`} 
-                    width="100" 
-                    style={{ borderRadius: '8px', cursor: 'pointer' }}
-                    alt="plate" 
-                    onClick={() => window.open(`http://localhost:8000/plates/${log.plate_image_path.split('/').pop()}`, '_blank')}
-                  />
-                </td>
-                <td style={{ fontWeight: 600 }}>{log.camera_name}</td>
-                <td>{new Date(log.time_in).toLocaleString()}</td>
-                <td>{log.time_out ? new Date(log.time_out).toLocaleString() : '---'}</td>
-                <td>
-                  <span style={{ 
-                    padding: '4px 10px', 
-                    borderRadius: '6px', 
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    background: log.time_out ? 'rgba(148,163,184,0.1)' : 'rgba(16,185,129,0.1)',
-                    color: log.time_out ? 'var(--text-dim)' : 'var(--success)',
-                    border: `1px solid ${log.time_out ? 'rgba(148,163,184,0.2)' : 'rgba(16,185,129,0.2)'}`
-                  }}>
-                    {log.time_out ? 'COMPLETED' : 'IN PROGRESS'}
-                  </span>
-                </td>
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Plate Number</th>
+                <th>Detection View</th>
+                <th>Camera Location</th>
+                <th>Entry Time</th>
+                <th>Exit Time</th>
+                <th>Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filteredLogs.map(log => (
+                <tr key={log.id}>
+                  <td>
+                    <span style={{ 
+                      background: '#1e293b', 
+                      color: 'white',
+                      padding: '6px 12px', 
+                      borderRadius: '6px', 
+                      fontFamily: 'monospace', 
+                      fontWeight: 900,
+                      border: '2px solid #334155',
+                      fontSize: '16px'
+                    }}>
+                      {log.plate_number || 'UNKNOWN'}
+                    </span>
+                  </td>
+                  <td>
+                    {log.image_data ? (
+                      <img 
+                        src={`data:image/jpeg;base64,${log.image_data}`} 
+                        width="120" 
+                        style={{ borderRadius: '8px', cursor: 'pointer', border: '1px solid var(--border)' }}
+                        alt="plate" 
+                        onClick={() => {
+                          const win = window.open();
+                          win.document.write(`<img src="data:image/jpeg;base64,${log.image_data}" style="max-width:100%"/>`);
+                        }}
+                      />
+                    ) : (
+                      <div style={{ width: '120px', height: '60px', background: 'var(--glass)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: 'var(--text-dim)' }}>
+                        NO IMAGE
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ fontWeight: 600 }}>{log.camera_name || 'N/A'}</td>
+                  <td>{log.time_in ? new Date(log.time_in).toLocaleString() : '---'}</td>
+                  <td>{log.time_out ? new Date(log.time_out).toLocaleString() : '---'}</td>
+                  <td>
+                    <span style={{ 
+                      padding: '4px 10px', 
+                      borderRadius: '6px', 
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      background: log.time_out ? 'rgba(148,163,184,0.1)' : 'rgba(16,185,129,0.1)',
+                      color: log.time_out ? 'var(--text-dim)' : 'var(--success)',
+                      border: `1px solid ${log.time_out ? 'rgba(148,163,184,0.2)' : 'rgba(16,185,129,0.2)'}`
+                    }}>
+                      {log.time_out ? 'COMPLETED' : 'IN PROGRESS'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {filteredLogs.length === 0 && (
           <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-dim)' }}>
             No logs found matching your search.

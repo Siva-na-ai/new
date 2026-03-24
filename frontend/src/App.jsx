@@ -7,6 +7,7 @@ import CamerasView from './components/CamerasView'
 import RestrictionArea from './components/RestrictionArea'
 import YoutubeView from './components/YoutubeView'
 import EntryLogs from './components/EntryLogs'
+import UploadView from './components/UploadView'
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('vision_auth') === 'true');
@@ -97,6 +98,7 @@ function App() {
           <Route path="/viewer" element={<CamerasView isViewer />} />
           <Route path="/zones" element={<RestrictionArea />} />
           <Route path="/youtube" element={<YoutubeView />} />
+          <Route path="/upload" element={<UploadView />} />
           <Route path="/logs" element={<EntryLogs />} />
         </Route>
         {/* Redirect unknown routes */}

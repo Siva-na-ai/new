@@ -16,3 +16,13 @@ gdown
 tensorboard
 yacs
 yt-dlp
+redis
+paddlepaddle
+paddleocr
+pydantic-settings
+python-dotenv
+httpx
+numpy<2.0.0
+twilio
+requests
+lap

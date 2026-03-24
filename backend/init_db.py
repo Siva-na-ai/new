@@ -1,16 +1,30 @@
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
+import os
+from dotenv import load_dotenv
+
+# Load .env from backend directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 def create_database():
     try:
         # Connect to default postgres database
-        conn = psycopg2.connect(
-            dbname='postgres',
-            user='postgres',
-            password='password',
-            host='localhost',
-            port='5432'
-        )
+        host = os.getenv("DB_HOST", "localhost")
+        port = os.getenv("DB_PORT", "5432")
+        user = os.getenv("DB_USER")
+        password = os.getenv("DB_PASSWORD")
+        
+        conn_params = {
+            'dbname': 'postgres',
+            'host': host,
+            'port': port
+        }
+        if user: conn_params['user'] = user
+        if password: conn_params['password'] = password
+        
+        conn = psycopg2.connect(**conn_params)
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
         

@@ -7,17 +7,21 @@ class GlobalIDManager:
         self.memory_limit = memory_limit
         self.global_db = {} # {global_id: {"embedding": vector, "last_seen_frame": frame_id}}
         self.next_global_id = 1
-        self.track_to_global = {} # Map temporary track_id to global_id
+        self.track_to_global = {} # Map (camera_id, track_id) to global_id
 
     def cosine_similarity(self, a, b):
         if a is None or b is None:
             return 0.0
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-6)
 
-    def match_new_track(self, track_id, embedding, frame_id):
+    def get_active_global_id(self, camera_id, track_id):
+        return self.track_to_global.get((camera_id, track_id))
+
+    def match_new_track(self, camera_id, track_id, embedding, frame_id):
         """
         When a new track_id appears, find if it matches an existing global_id.
         """
+        key = (camera_id, track_id)
         best_similarity = -1
         best_global_id = None
         
@@ -28,19 +32,19 @@ class GlobalIDManager:
                 best_global_id = g_id
         
         if best_similarity > self.threshold:
-            print(f"Match found! Track ID {track_id} matches Global ID {best_global_id} (Similarity: {best_similarity:.2f})")
-            self.track_to_global[track_id] = best_global_id
+            print(f"Match found! [CAM {camera_id}] Track {track_id} matches Global {best_global_id} ({best_similarity:.2f})")
+            self.track_to_global[key] = best_global_id
             self.update_embedding(best_global_id, embedding, frame_id)
             return best_global_id
         else:
             new_id = self.next_global_id
             self.next_global_id += 1
-            print(f"Assigning NEW Global ID {new_id} to Track ID {track_id}")
+            print(f"Assigning NEW Global ID {new_id} to [CAM {camera_id}] Track {track_id}")
             self.global_db[new_id] = {
                 "embedding": embedding,
                 "last_seen_frame": frame_id
             }
-            self.track_to_global[track_id] = new_id
+            self.track_to_global[key] = new_id
             return new_id
 
     def update_embedding(self, global_id, current_embedding, frame_id):
