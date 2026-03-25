@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload } from 'lucide-react';
+import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck } from 'lucide-react';
 
 const Layout = ({ loggedUser, onLogout }) => {
   const [alarmActive, setAlarmActive] = useState(false);
@@ -8,6 +8,7 @@ const Layout = ({ loggedUser, onLogout }) => {
   const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
   const [uiLogs, setUiLogs] = useState([]);
   const lastAlertIdRef = useRef(localStorage.getItem('vision_last_alert_id') ? Number(localStorage.getItem('vision_last_alert_id')) : null);
+  const lastVehicleIdRef = useRef(localStorage.getItem('vision_last_vehicle_id') ? Number(localStorage.getItem('vision_last_vehicle_id')) : null);
   const audioRef = useRef(null);
   const navigate = useNavigate();
 
@@ -20,7 +21,7 @@ const Layout = ({ loggedUser, onLogout }) => {
 
   const addUiLog = (msg) => {
     const time = new Date().toLocaleTimeString();
-    setUiLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 5));
+    setUiLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 10)); // Increased to 10 for better visibility
     console.log(msg);
   };
 
@@ -101,71 +102,63 @@ const Layout = ({ loggedUser, onLogout }) => {
     };
     window.addEventListener('click', unlockAudio);
 
-    // Initial fetch to set baseline alert ID
-    fetch('/api/api-alerts')
-      .then(res => {
-        if (!res.ok) throw new Error(`Server Sync Error: ${res.status}`);
-        return res.json();
-      })
-      .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          lastAlertIdRef.current = data[0].id;
-        }
-      })
-      .catch(err => console.debug("Alarm Init Waiting (Server Starting?):", err.message));
+    // Initial fetch to set baseline alert IDs
+    fetch('/api/alerts')
+      .then(res => res.json())
+      .then(data => { if (Array.isArray(data) && data.length > 0) lastAlertIdRef.current = data[0].id; });
+
+    fetch('/api/vehicles')
+      .then(res => res.json())
+      .then(data => { if (Array.isArray(data) && data.length > 0) lastVehicleIdRef.current = data[0].id; });
 
     const interval = setInterval(() => {
-      fetch('/api/api-alerts')
-        .then(res => {
-          if (!res.ok) throw new Error(`Status ${res.status}`);
-          return res.json();
-        })
+      // 1. Poll Alerts
+      fetch('/api/alerts')
+        .then(res => res.ok ? res.json() : [])
         .then(data => {
           if (Array.isArray(data) && data.length > 0) {
             const newest = data[0];
             const currentId = Number(newest.id);
             const baselineId = lastAlertIdRef.current !== null ? Number(lastAlertIdRef.current) : null;
 
-            // If we have a baseline and the newest ID is higher, trigger alarm
             if (baselineId !== null && currentId > baselineId) {
-              addUiLog(`🚨 NEW ALERT: ID ${currentId} from ${newest.camera_name}`);
+              addUiLog(`🚨 ALERT: ${newest.camera_name} - Restriction Breach`);
               setLatestAlert(newest);
               setAlarmActive(true);
               lastAlertIdRef.current = currentId;
               localStorage.setItem('vision_last_alert_id', currentId.toString());
               
-              // Trigger Browser Notification
               if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification(`🚨 SECURITY ALERT: ${newest.alert_type}`, {
-                  body: `Violation detected at ${newest.camera_id} (${newest.timestamp})`,
-                  icon: '/favicon.ico',
-                  tag: 'alert-' + newest.id
-                });
+                new Notification(`🚨 SECURITY ALERT`, { body: `Violation at ${newest.camera_name}`, tag: 'alert-' + newest.id });
               }
-              
-              // Try to play audio
-              if (audioRef.current) {
-                audioRef.current.currentTime = 0; // Reset to start
-                audioRef.current.volume = 1.0;    // Ensure full volume
-                audioRef.current.play()
-                  .then(() => {
-                    addUiLog(`🔊 Sound played for ID ${currentId}`);
-                    // Parallel Siren for redundancy
-                    playSiren();
-                  })
-                  .catch(e => {
-                    addUiLog("🔇 Sound BLOCKED by Browser!");
-                    // Force a visible alert if sound fails
-                    window.alert(`🚨 SECURITY BREACH! (ID: ${currentId})\nCamera: ${newest.camera_name}`);
-                  });
-              }
+              if (audioRef.current) audioRef.current.play().then(playSiren).catch(() => {});
             } else if (baselineId === null) {
-              addUiLog(`📡 Monitoring active. Baseline ID: ${currentId}`);
               lastAlertIdRef.current = currentId;
             }
           }
         })
-        .catch(err => console.error("Alarm Polling Error:", err));
+        .catch(() => {});
+
+      // 2. Poll Vehicles
+      fetch('/api/vehicles')
+        .then(res => res.ok ? res.json() : [])
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            const newest = data[0];
+            const currentId = Number(newest.id);
+            const baselineId = lastVehicleIdRef.current !== null ? Number(lastVehicleIdRef.current) : null;
+
+            if (baselineId !== null && currentId > baselineId) {
+              addUiLog(`🚗 VEHICLE: ${newest.camera_name} - Detected [${newest.plate_number}]`);
+              lastVehicleIdRef.current = currentId;
+              localStorage.setItem('vision_last_vehicle_id', currentId.toString());
+              playBeep(); // Short beep for vehicles
+            } else if (baselineId === null) {
+              lastVehicleIdRef.current = currentId;
+            }
+          }
+        })
+        .catch(() => {});
 
     }, 1500); // Increased polling speed for better responsiveness
 
@@ -273,6 +266,9 @@ const Layout = ({ loggedUser, onLogout }) => {
           <NavLink to="/logs" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <History size={20} /> Entry Logs
           </NavLink>
+          <NavLink to="/ppe" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <UserCheck size={20} /> PPE Monitoring
+          </NavLink>
           
           {/* Test Alarm / Unlock Button */}
           <div 
@@ -330,19 +326,24 @@ const Layout = ({ loggedUser, onLogout }) => {
           position: 'fixed',
           bottom: '20px',
           right: '20px',
-          width: '280px',
-          background: 'rgba(0,0,0,0.8)',
-          border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: '8px',
-          padding: '10px',
-          fontSize: '10px',
+          width: '320px', // Slightly wider
+          maxHeight: '200px', // Limit height
+          overflowY: 'auto', // Scrollable
+          background: 'rgba(0,0,0,0.85)',
+          border: '1px solid rgba(255,255,255,0.15)',
+          borderRadius: '12px',
+          padding: '12px',
+          fontSize: '11px',
           fontFamily: 'monospace',
-          color: '#10b981',
+          color: '#34d399',
           zIndex: 999,
-          pointerEvents: 'none'
+          pointerEvents: 'auto', // Allow scrolling
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(10px)'
         }}>
-          {uiLogs.map((log, i) => <div key={i}>{log}</div>)}
-          {uiLogs.length === 0 && <div>Initializing logs...</div>}
+          <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.1)', pb: '4px', fontSize: '10px', color: '#64748b' }}>SYSTEM MONITOR v2.0</div>
+          {uiLogs.map((log, i) => <div key={i} style={{ marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{log}</div>)}
+          {uiLogs.length === 0 && <div style={{ opacity: 0.5 }}>Waiting for activity...</div>}
           <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '4px', pointerEvents: 'auto' }}>
             <a href="/api/alarm-sound" target="_blank" style={{ color: '#34d399', textDecoration: 'underline', fontSize: '9px' }}>
               🔗 File

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_HOST = os.getenv("DB_HOST", "192.168.0.249")
 DB_PORT = os.getenv("DB_PORT", "5432")
 # Use defaults only if not set in .env
 DB_USER = os.getenv("DB_USER") or "postgres"
@@ -55,7 +55,7 @@ class Alert(Base):
     global_id = Column(Integer)
     image_data = Column(String)  # Base64 encoded image data
     image_path = Column(String)  # Deprecated, keeping for safety
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
     camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
     camera_name = Column(String)
 
@@ -68,8 +68,20 @@ class VehicleCheck(Base):
     plate_number = Column(String, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
     camera_name = Column(String)
-    time_in = Column(DateTime, default=datetime.datetime.utcnow)
+    time_in = Column(DateTime, default=datetime.datetime.now)
     time_out = Column(DateTime, nullable=True)
+
+class PPEViolation(Base):
+    __tablename__ = "ppe_violations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    track_id = Column(Integer)
+    global_id = Column(Integer)
+    violation_type = Column(String)  # 'no_helmet', 'no_vest', 'helmet', 'vest'
+    image_data = Column(String)  # Base64 encoded image data
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    camera_name = Column(String)
 
 class User(Base):
     __tablename__ = "users"

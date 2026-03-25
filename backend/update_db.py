@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, text
 import os
 
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:password@localhost/video_analysis"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:password@192.168.0.249:5432/video_analysis"
 
 def update_schema():
     engine = create_engine(SQLALCHEMY_DATABASE_URL)

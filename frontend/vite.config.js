@@ -8,8 +8,20 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            console.log('proxy error', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            // console.log('Sending Request to the Target:', req.method, req.url);
+          });
+        },
+        timeout: 600000, // 10 minutes timeout for large files
+        proxyTimeout: 600000 
       }
     }
   }

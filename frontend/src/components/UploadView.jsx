@@ -30,7 +30,8 @@ const UploadView = () => {
         })
         .catch(err => {
             setUploading(false);
-            alert('Upload error: ' + err.message);
+            console.error('Upload Fetch Error:', err);
+            alert('Upload error: ' + err.message + '. Please check if the server is running and the file is not too large.');
         });
     };
 

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body, UploadFile, File, Response
 import httpx
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,24 +84,28 @@ ALARAM_DIR = os.path.join(os.path.dirname(BASE_DIR), "alaram")
 os.makedirs(ALARAM_DIR, exist_ok=True)
 app.mount("/alaram", StaticFiles(directory=ALARAM_DIR), name="alaram")
 
-@app.get("/alarm-sound")
-@app.head("/alarm-sound")
+@app.get("/api/alarm-sound")
+@app.head("/api/alarm-sound")
 def get_alarm_sound():
     sound_file = os.path.join(ALARAM_DIR, "clip-1773994393607.mp3")
     if os.path.exists(sound_file):
         return FileResponse(sound_file, media_type="audio/mpeg")
     return {"error": "Sound file not found"}
 
-@app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...)):
+@app.post("/api/upload-video")
+def upload_video(file: UploadFile = File(...)):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Receiving: {file.filename}")
     try:
         # Generate a unique path for the video
         filename = f"upload-{int(datetime.datetime.now().timestamp())}-{file.filename}"
         file_path = os.path.join(UPLOADS_DIR, filename)
         
+        # Using a regular "def" route in FastAPI executes in a threadpool, 
+        # which is perfect for blocking file I/O like this copyfileobj.
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] FINALIZING Video Upload: {filename}")
         return JSONResponse({
             "status": "success",
             "filename": filename,
@@ -109,6 +113,9 @@ async def upload_video(file: UploadFile = File(...)):
             "url": f"/uploads/{filename}"
         })
     except Exception as e:
+        import traceback
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] UPLOAD CRITICAL ERROR: {str(e)}")
+        traceback.print_exc()
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 # CORS for React frontend
@@ -259,14 +266,24 @@ async def sync_worker_task():
                 try:
                     resp = await client.get("http://127.0.0.1:8001/status", timeout=2.0)
                     if resp.status_code == 200:
-                        worker_ids = resp.json().get("active_cameras", [])
+                        data = resp.json()
+                        worker_ids = data.get("active_cameras", [])
+                        worker_details = data.get("details", {})
+                        
+                        # Update main.py's view of camera health
+                        for cam_id_str, details in worker_details.items():
+                            cam_id = int(cam_id_str)
+                            if cam_id not in active_cameras:
+                                active_cameras[cam_id] = {}
+                            active_cameras[cam_id].update(details)
+                        
                         for cam in active_db_cams:
                             if cam.id not in worker_ids:
                                 print(f"[SYNC] Worker missing active Cam {cam.id}. Syncing...")
                                 import asyncio
                                 asyncio.create_task(start_camera_pipeline(cam.id, cam.ip_address))
-                except:
-                    # Worker offline, start_camera_pipeline logic will handle retries if called
+                except Exception as e:
+                    print(f"[SYNC] Worker unreachable: {e}")
                     pass
         except Exception as e:
             print(f"[SYNC ERROR] {e}")
@@ -276,13 +293,24 @@ async def sync_worker_task():
 # API Endpoints
 
 @app.post("/api/cameras")
-async def add_camera(ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+def add_camera(ip_address: str, place_name: str, detections: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ip_address = ip_address.strip()
-    # detections is expected as comma-separated IDs or a JSON list
+    # detections is expected as comma-separated IDs
     try:
-        det_list = [int(i.strip()) for i in detections.split(",")]
-    except:
-        det_list = [0, 1, 2, 3, 4] # Default
+        if not detections.strip():
+            det_list = [] # None selected
+        else:
+            # Store names as strings directly to avoid ID mismatch with different models
+            VALID_CLASSES = [
+                "person", "helmet", "no_helmet", "vest", "no_vest", "license_plate",
+                "box_opened", "box_closed", "forklift", "collision", "truck_covered", 
+                "truck_not_covered", "person_not_working", "person_standing", "person_working",
+                "vehicle", "car", "bus", "truck", "motorcycle"
+            ]
+            det_list = sorted(list(set(i.strip().lower() for i in detections.split(",") if i.strip().lower() in VALID_CLASSES)))
+    except Exception as e:
+        print(f"ADD ERROR (Parsing Detections): {e}")
+        det_list = ["person"] # Safety Default
         
     # Store the ORIGINAL ip_address in DB so frontend filtering works
     new_cam = Camera(ip_address=ip_address, place_name=place_name, detections_to_run=det_list)
@@ -290,19 +318,30 @@ async def add_camera(ip_address: str, place_name: str, detections: str, db: Sess
     db.commit()
     db.refresh(new_cam)
     
-    await start_camera_pipeline(new_cam.id, ip_address)
+    background_tasks.add_task(start_camera_pipeline, new_cam.id, ip_address)
     return new_cam
 
 @app.put("/api/cameras/{camera_id}")
-async def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, db: Session = Depends(get_db)):
+def update_camera(camera_id: int, ip_address: str, place_name: str, detections: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ip_address = ip_address.strip()
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
     
     try:
-        det_list = [int(i.strip()) for i in detections.split(",")]
-    except:
+        if not detections.strip():
+            det_list = []
+        else:
+            # Store names as strings directly
+            VALID_CLASSES = [
+                "person", "helmet", "no_helmet", "vest", "no_vest", "license_plate",
+                "box_opened", "box_closed", "forklift", "collision", "truck_covered", 
+                "truck_not_covered", "person_not_working", "person_standing", "person_working",
+                "vehicle", "car", "bus", "truck", "motorcycle"
+            ]
+            det_list = sorted(list(set(i.strip().lower() for i in detections.split(",") if i.strip().lower() in VALID_CLASSES)))
+    except Exception as e:
+        print(f"UPDATE ERROR (Parsing Detections): {e}")
         det_list = cam.detections_to_run
         
     # Store ORIGINAL in DB
@@ -312,19 +351,19 @@ async def update_camera(camera_id: int, ip_address: str, place_name: str, detect
     db.commit()
     
     # Restart pipeline (non-blocking) - start_camera_pipeline will handle smart skip if source is same
-    await start_camera_pipeline(camera_id, ip_address)
+    background_tasks.add_task(start_camera_pipeline, camera_id, ip_address)
         
     return cam
 
 @app.delete("/api/cameras/{camera_id}")
-async def delete_camera(camera_id: int, db: Session = Depends(get_db)):
+def delete_camera(camera_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Resource Unavailable: surveillance node ID not registered.")
     
     try:
         # Stop pipeline in Worker
-        await stop_camera_pipeline(camera_id)
+        background_tasks.add_task(stop_camera_pipeline, camera_id)
         
         # We no longer delete dependent records manually. 
         # The database is configured with ON DELETE SET NULL to preserve them.
@@ -387,9 +426,10 @@ def list_cameras(db: Session = Depends(get_db)):
     result = []
     for cam in cameras:
         # If deactivated in DB, show 'No connection' immediately
+        cam_info = active_cameras.get(cam.id, {})
         status = "No connection"
         if cam.is_active:
-            status = active_cameras.get(cam.id, {}).get("status", "Starting...")
+            status = cam_info.get("status", "Starting...")
             
         result.append({
             "id": cam.id,
@@ -397,12 +437,14 @@ def list_cameras(db: Session = Depends(get_db)):
             "place_name": cam.place_name,
             "detections_to_run": cam.detections_to_run,
             "status": status,
-            "is_active": cam.is_active
+            "is_active": cam.is_active,
+            "frames": cam_info.get("frames", 0),
+            "last_seen": cam_info.get("last_seen", 0)
         })
     return result
 
 @app.post("/api/cameras-toggle/{camera_id}")
-async def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
+def toggle_camera(camera_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] TOGGLE REQUEST RECEIVED for Cam {camera_id}")
     cam = db.query(Camera).filter(Camera.id == camera_id).first()
     if not cam:
@@ -413,16 +455,17 @@ async def toggle_camera(camera_id: int, db: Session = Depends(get_db)):
     
     if not cam.is_active:
         # Stop pipeline in Worker
-        await stop_camera_pipeline(camera_id)
+        background_tasks.add_task(stop_camera_pipeline, camera_id)
     else:
         # Start pipeline in Worker
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Camera {camera_id} activated. Starting Worker...")
-        await start_camera_pipeline(camera_id, cam.ip_address)
+        background_tasks.add_task(start_camera_pipeline, camera_id, cam.ip_address)
         
     return {"is_active": cam.is_active}
 
 @app.get("/api/stats")
-def get_stats(db: Session = Depends(get_db)):
+def get_stats(response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     total_alerts = db.query(Alert).count()
     total_vehicles = db.query(VehicleCheck).count()
     active_count = len([c for c in active_cameras.values() if not c.get("stop")])
@@ -455,17 +498,70 @@ def add_zone(camera_id: int, points: list = Body(...), activation_time: Optional
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/alerts")
-def get_alerts(db: Session = Depends(get_db)):
+def get_alerts(response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return db.query(Alert).order_by(Alert.timestamp.desc()).limit(30).all()
 
 @app.get("/api/vehicles")
-def get_vehicle_checks(db: Session = Depends(get_db)):
+def get_vehicle_checks(response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return db.query(VehicleCheck).order_by(VehicleCheck.time_in.desc()).limit(30).all()
+
+@app.get("/api/ppe/stats")
+def get_ppe_stats(response: Response, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    today = datetime.date.today()
+    tomorrow = today + datetime.timedelta(days=1)
+    
+    from database import PPEViolation
+    stats = {}
+    for v_type in ["helmet", "no_helmet", "vest", "no_vest"]:
+        count = db.query(PPEViolation).filter(
+            PPEViolation.violation_type == v_type,
+            PPEViolation.timestamp >= today,
+            PPEViolation.timestamp < tomorrow
+        ).count()
+        stats[v_type] = count
+    return stats
+
+@app.get("/api/ppe/logs")
+def get_ppe_logs(response: Response, start_date: Optional[str] = None, end_date: Optional[str] = None, db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    from database import PPEViolation
+    query = db.query(PPEViolation)
+    
+    if start_date:
+        query = query.filter(PPEViolation.timestamp >= datetime.datetime.fromisoformat(start_date))
+    if end_date:
+        query = query.filter(PPEViolation.timestamp <= datetime.datetime.fromisoformat(end_date))
+        
+    return query.order_by(PPEViolation.timestamp.desc()).limit(100).all()
 
 @app.get("/api/zones/{camera_id}")
 def get_zones(camera_id: int, db: Session = Depends(get_db)):
     return db.query(RestrictionZone).filter(RestrictionZone.camera_id == camera_id).all()
+
+@app.post("/api/zones")
+def create_zone(camera_id: int, activation_time: Optional[str] = None, points: list = Body(...), db: Session = Depends(get_db)):
+    act_time = None
+    if activation_time and activation_time.strip():
+        try:
+            act_time = datetime.datetime.fromisoformat(activation_time)
+        except ValueError:
+            pass
+            
+    new_zone = RestrictionZone(
+        camera_id=camera_id,
+        polygon_points=points,
+        activation_time=act_time,
+        is_active=True
+    )
+    db.add(new_zone)
+    db.commit()
+    db.refresh(new_zone)
+    return {"status": "success", "zone_id": new_zone.id}
 
 @app.delete("/api/zones/{zone_id}")
 def delete_zone(zone_id: int, db: Session = Depends(get_db)):
@@ -497,12 +593,32 @@ def generate_frames(camera_id, show_detections=True):
             
             if show_detections:
                 detections = active_cameras[camera_id]["detections"]
+                # Get actual frame dimensions for scaling
+                h, w = frame.shape[:2]
                 for det in detections:
+                    if not det.get("visible", True):
+                        continue
+                    
+                    # Assuming detections are in original frame coordinates (which they are stored as)
+                    # We need to scale them to the CURRENT 'frame' resolution which might be downscaled
+                    orig_w = det.get("frame_w", w)
+                    orig_h = det.get("frame_h", h)
+                    
+                    scale_x = w / orig_w if orig_w > 0 else 1
+                    scale_y = h / orig_h if orig_h > 0 else 1
+                    
                     x1, y1, x2, y2 = det["xyxy"]
+                    rx1, ry1 = int(x1 * scale_x), int(y1 * scale_y)
+                    rx2, ry2 = int(x2 * scale_x), int(y2 * scale_y)
+                    
                     color = (0, 255, 0) # Green
-                    label = f"{det['class_name']} {det.get('global_id', '')}"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    gid = det.get('global_id', '')
+                    if det['class_name'] == 'license_plate':
+                        label = f"{det['class_name']}"
+                    else:
+                        label = f"{det['class_name']} {gid}"
+                    cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), color, 2)
+                    cv2.putText(frame, label, (rx1, ry1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                 
             # Add status overlay at the bottom (ALWAYS SHOW)
             overlay_text = f"CAM {camera_id} | {status} | FID:{fid} | {datetime.datetime.now().strftime('%H:%M:%S')}"
@@ -525,63 +641,59 @@ async def video_feed(camera_id: int, detect: bool = True):
     import anyio
     # Returns a multipart stream of MJPEG frames
     async def gen():
-        while True:
-            # Check if camera exists in active list
-            if camera_id not in active_cameras or active_cameras[camera_id].get("stop"):
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                await anyio.sleep(0.5)
-                continue
-                
-            # --- REDIS-BASED FRAME RETRIEVAL ---
-            try:
-                # 1. Pull Latest Frame from Redis
-                frame_bytes = r.get(f"camera:{camera_id}:frame")
-                
-                if frame_bytes is None:
-                    # If Redis is empty, show placeholder
+        try:
+            while True:
+                # Check if camera exists in active list
+                if camera_id not in active_cameras or active_cameras[camera_id].get("stop"):
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                    await anyio.sleep(0.1)
+                    await anyio.sleep(0.5)
                     continue
+                    
+                # --- REDIS-BASED FRAME RETRIEVAL ---
+                try:
+                    # 1. Pull Latest Frame from Redis
+                    frame_bytes = r.get(f"camera:{camera_id}:frame")
+                    
+                    if frame_bytes is None:
+                        # If Redis is empty, show placeholder
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                        await anyio.sleep(0.1)
+                        continue
+                    
+                    # 2. Pull Detections from Redis (for drawing)
+                    if detect:
+                        dets_raw = r.get(f"camera:{camera_id}:detections")
+                        if dets_raw:
+                            try:
+                                detections = json.loads(dets_raw.decode('utf-8'))
+                                image = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+                                for det in detections:
+                                    x1, y1, x2, y2 = det["xyxy"]
+                                    label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
+                                    color = (0, 255, 0)
+                                    if det.get("class_name") == "person": color = (255, 0, 0)
+                                    cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                                    cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                                
+                                _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                frame_bytes = buffer.tobytes()
+                            except Exception as e:
+                                print(f"Drawing error in main.py: {e}")
+                    
+                    # 3. Yield the MJPEG frame
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                    
+                except Exception as e:
+                    print(f"Redis retrieval error Cam {camera_id}: {e}")
+                    await anyio.sleep(0.1)
                 
-                # 2. Pull Detections from Redis (for drawing)
-                if detect:
-                    dets_raw = r.get(f"camera:{camera_id}:detections")
-                    if dets_raw:
-                        try:
-                            detections = json.loads(dets_raw.decode('utf-8'))
-                            # If we need to DRAW them on the API side, we'd need to decode the JPEG.
-                            # BUT: It's better to draw them on the Worker side OR have the frontend draw them.
-                            # Current implementation in main.py was drawing them.
-                            # To keep it simple and fast, we'll let the Worker do the drawing IF requested,
-                            # OR we decode here. Let's decode here to maintain existing main.py behavior.
-                            
-                            image = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
-                            for det in detections:
-                                x1, y1, x2, y2 = det["xyxy"]
-                                label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
-                                color = (0, 255, 0)
-                                if det.get("class_name") == "person": color = (255, 0, 0)
-                                cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-                                cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                            
-                            _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                            frame_bytes = buffer.tobytes()
-                        except Exception as e:
-                            print(f"Drawing error in main.py: {e}")
-                
-                # 3. Yield the MJPEG frame
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                
-            except Exception as e:
-                print(f"Redis retrieval error Cam {camera_id}: {e}")
-                await anyio.sleep(0.1)
-                continue
-            
-            # Control frame rate
-            await anyio.sleep(0.03) # ~30 FPS
+                # Control frame rate
+                await anyio.sleep(0.03) # ~30 FPS
+        except Exception as e:
+            print(f"[MAIN FEED DEAD] Cam {camera_id}: {e}")
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 

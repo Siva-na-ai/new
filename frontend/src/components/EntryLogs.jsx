@@ -4,12 +4,29 @@ import { Search, Download, Calendar } from 'lucide-react'
 const EntryLogs = () => {
   const [logs, setLogs] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [lastSync, setLastSync] = useState(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const fetchLogs = () => {
+    setIsSyncing(true);
+    const t = Date.now();
+    fetch(`/api/vehicles?t=${t}`)
+      .then(res => res.json())
+      .then(data => {
+        setLogs(Array.isArray(data) ? data : []);
+        setLastSync(new Date().toLocaleTimeString());
+        setTimeout(() => setIsSyncing(false), 500);
+      })
+      .catch(err => {
+        console.error(err);
+        setIsSyncing(false);
+      });
+  };
 
   useEffect(() => {
-    fetch('/api/api-vehicles')
-      .then(res => res.json())
-      .then(data => setLogs(Array.isArray(data) ? data : []))
-      .catch(err => console.error(err));
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const filteredLogs = logs.filter(log => {
@@ -26,9 +43,15 @@ const EntryLogs = () => {
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Entry Logs</h2>
           <p style={{ color: 'var(--text-dim)' }}>Comprehensive history of all vehicle movements</p>
         </div>
-        <button style={{ background: 'var(--glass)', border: '1px solid var(--border)', color: 'white' }}>
-          <Download size={18} /> Export CSV
-        </button>
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <div className="glass-card" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', fontSize: '11px' }}>
+            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: isSyncing ? 'var(--primary)' : 'var(--success)', boxShadow: `0 0 10px ${isSyncing ? 'var(--primary)' : 'var(--success)'}` }}></div>
+            <span style={{ fontWeight: 600 }}>{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
+          </div>
+          <button style={{ background: 'var(--glass)', border: '1px solid var(--border)', color: 'white' }}>
+            <Download size={18} /> Export CSV
+          </button>
+        </div>
       </header>
 
       <div className="glass-card" style={{ padding: '16px', display: 'flex', gap: '16px', alignItems: 'center' }}>

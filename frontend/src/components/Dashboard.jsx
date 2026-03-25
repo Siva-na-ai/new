@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Line, Bar } from 'react-chartjs-2'
+import { UserCheck } from 'lucide-react'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -33,6 +34,7 @@ const Dashboard = () => {
   const [lastSync, setLastSync] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [stats, setStats] = useState({ total_alerts: 0, total_vehicles: 0, active_cameras: 0 });
+  const [ppeStats, setPpeStats] = useState({ helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 });
   const [selectedItem, setSelectedItem] = useState(null);
   const [modalType, setModalType] = useState(null);
 
@@ -40,22 +42,23 @@ const Dashboard = () => {
 
   const fetchData = () => {
     setIsSyncing(true);
-    const start = Date.now();
+    const t = Date.now(); // Cache-busting timestamp
     
     Promise.all([
-      fetch(`${API_BASE}/alerts`).then(res => res.ok ? res.json() : Promise.reject(`Alerts: ${res.status}`)),
-      fetch(`${API_BASE}/vehicles`).then(res => res.ok ? res.json() : Promise.reject(`Vehicles: ${res.status}`)),
-      fetch(`${API_BASE}/cameras`).then(res => res.ok ? res.json() : Promise.reject(`Cameras: ${res.status}`)),
-      fetch(`${API_BASE}/stats`).then(res => res.ok ? res.json() : Promise.reject(`Stats: ${res.status}`))
-    ]).then(([alertData, checkData, camData, statData]) => {
-      console.log("Dashboard Data Fetched:", { alertData, statData });
+      fetch(`${API_BASE}/alerts?t=${t}`).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/vehicles?t=${t}`).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/cameras?t=${t}`).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/stats?t=${t}`).then(res => res.ok ? res.json() : { total_alerts: 0, total_vehicles: 0, active_cameras: 0 }),
+      fetch(`${API_BASE}/ppe/stats?t=${t}`).then(res => res.ok ? res.json() : { helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 })
+    ]).then(([alertData, checkData, camData, statData, ppeData]) => {
       setAlerts(Array.isArray(alertData) ? alertData : []);
       setVehicleChecks(Array.isArray(checkData) ? checkData : []);
       setCameras(Array.isArray(camData) ? camData : []);
-      setStats(statData || { total_alerts: 0, total_vehicles: 0, active_cameras: 0 });
+      setStats(statData);
+      setPpeStats(ppeData);
       if (Array.isArray(alertData)) updateChart(alertData);
       setLastSync(new Date().toLocaleTimeString());
-      setIsSyncing(false);
+      setTimeout(() => setIsSyncing(false), 500); // Visual delay for feedback
     }).catch(err => {
       console.error("Dashboard Sync Error:", err);
       setIsSyncing(false);
@@ -111,29 +114,47 @@ const Dashboard = () => {
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Analytical Dashboard</h2>
           <p style={{ color: 'var(--text-dim)' }}>Real-time intelligence across all surveillance modules</p>
         </div>
-        <div className="glass-card" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255,255,255,0.05)' }}>
-          <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: isSyncing ? 'var(--primary)' : 'var(--success)', boxShadow: '0 0 10px var(--success)' }}></div>
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>Sync Status: {lastSync || 'Initializing...'}</span>
+        <div className="glass-card" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255,255,255,0.05)', minWidth: '220px' }}>
+          <div className={isSyncing ? "pulse-blue" : "pulse-green"} style={{ 
+            width: '8px', height: '8px', borderRadius: '50%', 
+            background: isSyncing ? 'var(--primary)' : 'var(--success)', 
+            boxShadow: `0 0 10px ${isSyncing ? 'var(--primary)' : 'var(--success)'}` 
+          }}></div>
+          <span style={{ fontSize: '13px', fontWeight: 600 }}>{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
         </div>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px' }}>
         <div className="glass-card" style={{ padding: '20px', textAlign: 'center' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Active Cameras</p>
-          <h3 style={{ fontSize: '32px', marginTop: '8px' }}>{stats.active_cameras}</h3>
+          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Active Cameras</p>
+          <h3 style={{ fontSize: '28px', marginTop: '8px' }}>{stats.active_cameras}</h3>
         </div>
         <div className="glass-card" style={{ padding: '20px', textAlign: 'center', borderLeft: '4px solid var(--accent)' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Total Alerts</p>
-          <h3 style={{ fontSize: '32px', marginTop: '8px', color: 'var(--accent)' }}>{stats.total_alerts}</h3>
+          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Restriction Alerts</p>
+          <h3 style={{ fontSize: '28px', marginTop: '8px', color: 'var(--accent)' }}>{stats.total_alerts}</h3>
         </div>
         <div className="glass-card" style={{ padding: '20px', textAlign: 'center', borderLeft: '4px solid var(--primary)' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Vehicle Entries</p>
-          <h3 style={{ fontSize: '32px', marginTop: '8px', color: 'var(--primary)' }}>{stats.total_vehicles}</h3>
+          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Vehicle Entries</p>
+          <h3 style={{ fontSize: '28px', marginTop: '8px', color: 'var(--primary)' }}>{stats.total_vehicles}</h3>
         </div>
-        <div className="glass-card" style={{ padding: '20px', textAlign: 'center', borderLeft: '4px solid var(--success)' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>System Health</p>
-          <h3 style={{ fontSize: '32px', marginTop: '8px', color: 'var(--success)' }}>98%</h3>
-        </div>
+      </div>
+
+      <div className="glass-card" style={{ padding: '24px' }}>
+         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', borderBottom: '1px solid var(--border)', paddingBottom: '12px' }}>
+            <UserCheck color="var(--primary)" size={24} />
+            <h4 style={{ fontSize: '18px', fontWeight: 800 }}>PPE Monitoring (Today)</h4>
+         </div>
+         
+         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #ef4444' }}>
+               <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO HELMET</p>
+               <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#ef4444' }}>{ppeStats.no_helmet}</div>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #f97316' }}>
+               <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO VEST</p>
+               <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#f97316' }}>{ppeStats.no_vest}</div>
+            </div>
+         </div>
       </div>
 
       <div className="grid-layout">

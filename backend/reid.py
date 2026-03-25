@@ -5,13 +5,18 @@ import numpy as np
 import cv2
 
 class ReID:
-    def __init__(self, model_name='osnet_ain_x1_0', device='cpu'):
-        self.device = device
+    def __init__(self, model_name='osnet_ain_x1_0', device=None):
+        if device is None:
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            self.device = device
+            
         self.extractor = FeatureExtractor(
             model_name=model_name,
             model_path=None, # Use pretrained weights from torchreid
-            device=device
+            device=self.device
         )
+        print(f"[REID] Initialized on {self.device}")
 
     def extract_embedding(self, person_crop):
         """

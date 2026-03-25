@@ -6,8 +6,9 @@ load_dotenv('backend/.env')
 
 def get_constraints():
     conn = psycopg2.connect(
-        host=os.getenv('DB_HOST'),
-        database=os.getenv('DB_NAME'),
+        host="192.168.0.249",
+        port=5432,
+        database=os.getenv('DB_NAME') or 'video_analysis',
         user=os.getenv('DB_USER') or 'postgres',
         password=os.getenv('DB_PASSWORD') or 'password'
     )

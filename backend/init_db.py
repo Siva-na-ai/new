@@ -11,7 +11,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 def create_database():
     try:
         # Connect to default postgres database
-        host = os.getenv("DB_HOST", "localhost")
+        host = os.getenv("DB_HOST", "192.168.0.249")
         port = os.getenv("DB_PORT", "5432")
         user = os.getenv("DB_USER")
         password = os.getenv("DB_PASSWORD")

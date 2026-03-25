@@ -2,20 +2,22 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import smtplib
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from twilio.rest import Client
 import datetime
 import threading
+import base64
 
 class NotificationManager:
     def __init__(self):
-        # Email Config (Use environment variables or placeholders)
-        self.smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.sender_email = os.getenv("SENDER_EMAIL", "")
-        self.sender_password = os.getenv("SENDER_PASSWORD", "")
-        self.recipient_email = os.getenv("RECIPIENT_EMAIL", "")
+        # Email Config (Hardcoded per USER REQUEST)
+        self.smtp_server = "smtp.gmail.com"
+        self.smtp_port = 587
+        self.sender_email = "sivanarayanam27@gmail.com"
+        self.sender_password = "ydqvmfxtrsypyyio" # Removed spaces
+        self.recipient_email = "sivanarayanam27@gmail.com" # Assuming same recipient
 
         # Twilio Config
         self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -23,7 +25,7 @@ class NotificationManager:
         self.twilio_from = os.getenv("TWILIO_FROM_NUMBER", "")
         self.target_phone = os.getenv("TARGET_PHONE_NUMBER", "")
 
-    def send_email_alert(self, subject, body):
+    def send_email_alert(self, subject, body, image_base64=None):
         if not all([self.sender_email, self.sender_password, self.recipient_email]):
             print("[NOTIFY] Email credentials missing. Skipping email.")
             return False
@@ -35,12 +37,22 @@ class NotificationManager:
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'plain'))
 
+            if image_base64:
+                try:
+                    # Decode base64 and attach as image
+                    image_data = base64.b64decode(image_base64)
+                    image_part = MIMEImage(image_data)
+                    image_part.add_header('Content-Disposition', 'attachment', filename='violation.jpg')
+                    msg.attach(image_part)
+                except Exception as img_err:
+                    print(f"[NOTIFY] Failed to attach image: {img_err}")
+
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
             server.starttls()
             server.login(self.sender_email, self.sender_password)
             server.send_message(msg)
             server.quit()
-            print(f"[NOTIFY] Email alert sent to {self.recipient_email}")
+            print(f"[NOTIFY] Visual Email alert sent to {self.recipient_email}")
             return True
         except Exception as e:
             print(f"[NOTIFY] Email ERROR: {e}")
@@ -84,23 +96,28 @@ class NotificationManager:
             print(f"[NOTIFY] Twilio Voice ERROR: {e}")
             return False
 
-    def broadcast_security_alert(self, camera_name, violation_type):
+    def broadcast_security_alert(self, camera_name, violation_type, image_base64=None):
         """Dispatches alerts in background threads to avoid blocking camera processing."""
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        subject = f"🚨 SECURITY BREACH: {camera_name}"
-        message = f"URGENT: {violation_type} detected at {camera_name} (Time: {timestamp}). Please check the Dashboard immediately."
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        subject = f"🚨 IMPORTANT: {camera_name} - {violation_type}"
+        message = (
+            f"URGENT: SECURITY BREACH DETECTED\n"
+            f"---------------------------------\n"
+            f"Camera Source: {camera_name}\n"
+            f"Incident Type: {violation_type}\n"
+            f"Time: {timestamp}\n"
+            f"Status: IMPORTANT / ACTION REQUIRED\n\n"
+            f"Please check the live Analytical Dashboard immediately."
+        )
         
         # Dispatch in background threads
         print(f"[NOTIFY] Dispatching background alerts for {camera_name}...")
         
-        # 1. Email (Background)
-        threading.Thread(target=self.send_email_alert, args=(subject, message), daemon=True).start()
+        # 1. Email with Image (Background)
+        threading.Thread(target=self.send_email_alert, args=(subject, message, image_base64), daemon=True).start()
         
         # 2. SMS (Background)
         threading.Thread(target=self.send_sms_alert, args=(message,), daemon=True).start()
-        
-        # 3. Voice Call (Background)
-        # threading.Thread(target=self.make_voice_call, args=(message,), daemon=True).start()
 
 # Global Instance
 notification_manager = NotificationManager()

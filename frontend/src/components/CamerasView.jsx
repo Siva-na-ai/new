@@ -53,8 +53,12 @@ const CamerasView = ({ isViewer = false }) => {
       : `/api/cameras?ip_address=${encodeURIComponent(newCam.ip_address)}&place_name=${encodeURIComponent(newCam.place_name)}&detections=${encodeURIComponent(newCam.detections.join(','))}`;
     
     fetch(url, { method: isEdit ? 'PUT' : 'POST' })
-    .then(res => res.json())
+    .then(res => {
+      if (!res.ok) throw new Error(`Server ${res.status}: Failed to commit configuration change.`);
+      return res.json();
+    })
     .then(savedCam => {
+      console.log('Camera Config Saved:', savedCam);
       if (isEdit) {
         setCameras(prev => prev.map(c => c.id === savedCam.id ? { ...c, ...savedCam } : c));
       } else {
@@ -64,6 +68,10 @@ const CamerasView = ({ isViewer = false }) => {
       setEditingCam(null);
       setTestStatus(null);
       setNewCam({ ip_address: '', place_name: '', detections: [] });
+    })
+    .catch(err => {
+      console.error('Update Error:', err);
+      alert('Sync Failure: ' + err.message + '\n\nPlease check the terminal for "Worker Communication Error" details.');
     });
   };
 
@@ -86,22 +94,26 @@ const CamerasView = ({ isViewer = false }) => {
 
   const handleEdit = (cam) => {
     setEditingCam(cam);
+    let detections = [];
+    if (typeof cam.detections_to_run === 'string') {
+        detections = cam.detections_to_run.split(',').filter(x => x);
+    } else if (Array.isArray(cam.detections_to_run)) {
+        detections = cam.detections_to_run;
+    }
     setNewCam({ 
       ip_address: cam.ip_address, 
       place_name: cam.place_name, 
-      detections: typeof cam.detections_to_run === 'string' 
-        ? cam.detections_to_run.split(',').filter(x => x).map(Number) 
-        : (Array.isArray(cam.detections_to_run) ? cam.detections_to_run : [])
+      detections: detections
     });
     setShowAddModal(true);
   };
 
-  const toggleDetection = (index) => {
+  const toggleDetection = (clsName) => {
     const updated = [...newCam.detections];
-    if (updated.includes(index)) {
-      updated.splice(updated.indexOf(index), 1);
+    if (updated.includes(clsName)) {
+      updated.splice(updated.indexOf(clsName), 1);
     } else {
-      updated.push(index);
+      updated.push(clsName);
     }
     setNewCam({ ...newCam, detections: updated });
   };
@@ -236,11 +248,11 @@ const CamerasView = ({ isViewer = false }) => {
               <label style={{ fontSize: '13px', marginBottom: '12px' }}>Detections to active</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '20px', maxHeight: '200px', overflowY: 'auto' }}>
                 {DETECTION_CLASSES.map((cls, idx) => (
-                  <div key={idx} onClick={() => toggleDetection(idx)} style={{ 
-                    padding: '8px', background: newCam.detections.includes(idx) ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
+                  <div key={idx} onClick={() => toggleDetection(cls)} style={{ 
+                    padding: '8px', background: newCam.detections.includes(cls) ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
                     borderRadius: '8px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px'
                   }}>
-                    {newCam.detections.includes(idx) ? <Check size={12} /> : <div style={{width: 12}} />}
+                    {newCam.detections.includes(cls) ? <Check size={12} /> : <div style={{width: 12}} />}
                     {cls}
                   </div>
                 ))}
