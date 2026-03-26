@@ -1,7 +1,6 @@
 # Root .gitignore
 # Exclude weights and system scripts as requested (only frontend and backend)
 weights/
-run.bat
 
 # Standard excludes for JS/React
 node_modules/
