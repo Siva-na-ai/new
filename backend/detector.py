@@ -50,5 +50,5 @@ class Detector:
 if __name__ == "__main__":
     # Test with a dummy image or webcam if available
     # For now, just initialize
-    detector = Detector(r"c:\Users\sivan\OneDrive - MSFT\analysis_system\weights\best_res1.pt")
+    detector = Detector(r"D:\analysis_system\weights\best_res1.pt")
     print(f"Model loaded with classes: {detector.classes}")

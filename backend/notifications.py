@@ -17,7 +17,7 @@ class NotificationManager:
         self.smtp_port = 587
         self.sender_email = "sivanarayanam27@gmail.com"
         self.sender_password = "ydqvmfxtrsypyyio" # Removed spaces
-        self.recipient_email = "sivanarayanam27@gmail.com" # Assuming same recipient
+        self.recipient_email = "sanjay@assimilatetechnologies.com" # Assuming same recipient
 
         # Twilio Config
         self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -58,45 +58,59 @@ class NotificationManager:
             print(f"[NOTIFY] Email ERROR: {e}")
             return False
 
-    def send_sms_alert(self, message):
-        if not all([self.twilio_sid, self.twilio_token, self.twilio_from, self.target_phone]):
-            print("[NOTIFY] Twilio credentials missing. Skipping SMS.")
-            return False
+    # def send_sms_alert(self, message):
+    #     if not all([self.twilio_sid, self.twilio_token, self.twilio_from, self.target_phone]):
+    #         print("[NOTIFY] Twilio credentials missing. Skipping SMS.")
+    #         return False
 
-        try:
-            client = Client(self.twilio_sid, self.twilio_token)
-            client.messages.create(
-                body=message,
-                from_=self.twilio_from,
-                to=self.target_phone
-            )
-            print(f"[NOTIFY] SMS alert sent to {self.target_phone}")
-            return True
-        except Exception as e:
-            print(f"[NOTIFY] Twilio SMS ERROR: {e}")
-            return False
+    #     try:
+    #         client = Client(self.twilio_sid, self.twilio_token)
+    #         client.messages.create(
+    #             body=message,
+    #             from_=self.twilio_from,
+    #             to=self.target_phone
+    #         )
+    #         print(f"[NOTIFY] SMS alert sent to {self.target_phone}")
+    #         return True
+    #     except Exception as e:
+    #         print(f"[NOTIFY] Twilio SMS ERROR: {e}")
+    #         return False
 
-    def make_voice_call(self, message):
+    def make_voice_call(self, camera_name, camera_id):
         if not all([self.twilio_sid, self.twilio_token, self.twilio_from, self.target_phone]):
             print("[NOTIFY] Twilio credentials missing. Skipping Voice Call.")
             return False
 
         try:
             client = Client(self.twilio_sid, self.twilio_token)
-            # Create a simple TwiML for the message
+            
+            # CHECK IF CALL IS ALREADY IN PROGRESS (Busy-Check)
+            # We check for queued, ringing, or in-progress calls to the target number
+            # This ensures only one call is active at a time as requested.
+            active_calls = client.calls.list(status='in-progress', to=self.target_phone)
+            ringing_calls = client.calls.list(status='ringing', to=self.target_phone)
+            queued_calls = client.calls.list(status='queued', to=self.target_phone)
+            
+            if active_calls or ringing_calls or queued_calls:
+                print(f"[NOTIFY] Call to {self.target_phone} already ACTIVE/RINGING. Skipping redundant call.")
+                return False
+
+            # Create TwiML message
+            message = f"Security Breach is happended in {camera_name} and ID {camera_id}, Please check the dashboard"
             twiml = f'<Response><Say voice="alice">{message}</Say></Response>'
+            
             client.calls.create(
                 to=self.target_phone,
                 from_=self.twilio_from,
                 twiml=twiml
             )
-            print(f"[NOTIFY] Voice call initiated to {self.target_phone}")
+            print(f"[NOTIFY] Voice call initiated to {self.target_phone} for Cam {camera_id}")
             return True
         except Exception as e:
             print(f"[NOTIFY] Twilio Voice ERROR: {e}")
             return False
 
-    def broadcast_security_alert(self, camera_name, violation_type, image_base64=None):
+    def broadcast_security_alert(self, camera_name, camera_id, violation_type, image_base64=None):
         """Dispatches alerts in background threads to avoid blocking camera processing."""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         subject = f"🚨 IMPORTANT: {camera_name} - {violation_type}"
@@ -117,7 +131,10 @@ class NotificationManager:
         threading.Thread(target=self.send_email_alert, args=(subject, message, image_base64), daemon=True).start()
         
         # 2. SMS (Background)
-        threading.Thread(target=self.send_sms_alert, args=(message,), daemon=True).start()
+        # threading.Thread(target=self.send_sms_alert, args=(message,), daemon=True).start()
+
+        # 3. Voice Call (Background) with Busy-Check
+        threading.Thread(target=self.make_voice_call, args=(camera_name, camera_id), daemon=True).start()
 
 # Global Instance
 notification_manager = NotificationManager()

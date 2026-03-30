@@ -38,9 +38,9 @@ const UploadView = () => {
     const handleCreateCamera = () => {
         if (!uploadedFile || !placeName) return;
 
-        // Default detections: person, person_not_working, forklift (Indexes 2, 12, 3)
-        const detections = "2,3,12";
-        const url = `/api/cameras?ip_address=${encodeURIComponent(uploadedFile.path)}&place_name=${encodeURIComponent(placeName)}&detections=${detections}`;
+        // Default detections: person, person_working, forklift
+        const detections = "person,person_working,forklift";
+        const url = `/api/cameras?ip_address=${encodeURIComponent(uploadedFile.path)}&place_name=${encodeURIComponent(placeName)}&detections=${encodeURIComponent(detections)}`;
 
         fetch(url, { method: 'POST' })
             .then(res => res.json())

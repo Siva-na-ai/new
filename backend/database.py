@@ -90,6 +90,18 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     password = Column(String)
 
+class DetectionLog(Base):
+    __tablename__ = "detection_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    camera_name = Column(String)
+    class_name = Column(String)
+    confidence = Column(Float)
+    image_data = Column(String) # Base64 encoded crop or thumbnail
+    metadata_hash = Column(String) # For 'bcrypt' requirement (hashed metadata)
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     

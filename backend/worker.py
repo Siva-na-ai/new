@@ -43,10 +43,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Global Redis Client
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
 
+# YouTube URL Cache
+yt_url_cache = {} # {url: {"resolved": url, "expires": timestamp}}
+
 # Global AI Engine Instances (Same as before, with Lock)
 ai_lock = threading.Lock()
 # Initialize with automatic device detection (cuda/cpu)
-shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "best_res1.pt"))
+shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "C:/Users/user/Downloads/yolo_models/runs/detect/yolov8_cus_emp9/weights/last.pt"))
 shared_reid = ReID()
 shared_global_id = GlobalIDManager()
 # Initialize OCR Engine (PaddleOCR with EasyOCR Fallback)
@@ -78,20 +81,30 @@ def get_ended_frame():
     return buffer.tobytes()
 
 def get_yt_stream_url(url, force_refresh=False):
-    # This worker will handle its own YT resolution
+    # This worker will handle its own YT resolution with caching
     import yt_dlp
+    import time
+    
+    now = time.time()
+    if not force_refresh and url in yt_url_cache and yt_url_cache[url]["expires"] > now:
+        return yt_url_cache[url]["resolved"]
+
     try:
         ydl_opts = {
-            'format': 'best', # Simpler format selection
+            'format': 'best',
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
             'nocheckcertificate': True,
-            'hls_use_mpegts': True # More stable for streaming
+            'hls_use_mpegts': True
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return info.get('url')
+            res_url = info.get('url')
+            if res_url:
+                # Cache for 15 minutes
+                yt_url_cache[url] = {"resolved": res_url, "expires": now + 900}
+            return res_url
     except Exception as e:
         print(f"Worker YT Error: {e}")
         return None
@@ -175,13 +188,24 @@ def camera_thread(camera_id, source):
                                 res = pipeline.process_frame(frame)
                                 if isinstance(res, tuple):
                                     dets, zones = res
-                                    active_cameras[camera_id]["detections"] = dets
-                                    active_cameras[camera_id]["zones"] = zones
-                                    r.set(f"camera:{camera_id}:detections", json.dumps(dets))
-                                    r.set(f"camera:{camera_id}:zones", json.dumps(zones))
                                 else:
-                                    active_cameras[camera_id]["detections"] = res
-                                    r.set(f"camera:{camera_id}:detections", json.dumps(res))
+                                    dets, zones = res, []
+                                
+                                active_cameras[camera_id]["detections"] = dets
+                                active_cameras[camera_id]["zones"] = zones
+                                
+                                # ATOMIC REDIS UPDATE: Store frame and dets together
+                                try:
+                                    _, jpeg_buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                                    data = {
+                                        "frame": base64.b64encode(jpeg_buf).decode('utf-8'),
+                                        "detections": dets,
+                                        "zones": zones,
+                                        "timestamp": time.time()
+                                    }
+                                    r.set(f"camera:{camera_id}:batch", json.dumps(data))
+                                except Exception as r_err:
+                                    print(f"Redis Broadcast Error: {r_err}")
                             except Exception as ai_err:
                                 print(f"[AI ERROR] Cam {camera_id}: {ai_err}")
                             finally:

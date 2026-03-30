@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import shutil
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import cv2
 import threading
 import time
@@ -80,14 +81,14 @@ app.mount("/api/media/alerts", StaticFiles(directory=ALERTS_DIR), name="alerts")
 app.mount("/api/media/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 # Mount custom alarms folder
-ALARAM_DIR = os.path.join(os.path.dirname(BASE_DIR), "alaram")
-os.makedirs(ALARAM_DIR, exist_ok=True)
-app.mount("/alaram", StaticFiles(directory=ALARAM_DIR), name="alaram")
+ALARM_DIR = os.path.join(os.path.dirname(BASE_DIR), "alarm")
+os.makedirs(ALARM_DIR, exist_ok=True)
+app.mount("/alarm", StaticFiles(directory=ALARM_DIR), name="alarm")
 
 @app.get("/api/alarm-sound")
 @app.head("/api/alarm-sound")
 def get_alarm_sound():
-    sound_file = os.path.join(ALARAM_DIR, "clip-1773994393607.mp3")
+    sound_file = os.path.join(ALARM_DIR, "clip-1773994393607.mp3")
     if os.path.exists(sound_file):
         return FileResponse(sound_file, media_type="audio/mpeg")
     return {"error": "Sound file not found"}
@@ -464,16 +465,14 @@ def toggle_camera(camera_id: int, background_tasks: BackgroundTasks, db: Session
     return {"is_active": cam.is_active}
 
 @app.get("/api/stats")
-def get_stats(response: Response, db: Session = Depends(get_db)):
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    total_alerts = db.query(Alert).count()
-    total_vehicles = db.query(VehicleCheck).count()
-    active_count = len([c for c in active_cameras.values() if not c.get("stop")])
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Stats Requested: Alerts={total_alerts}, Vehicles={total_vehicles}, ActiveCams={active_count}")
+def get_global_stats(db: Session = Depends(get_db)):
+    from database import Camera, Alert, VehicleCheck
+    today = datetime.date.today()
+    
     return {
-        "total_alerts": total_alerts,
-        "total_vehicles": total_vehicles,
-        "active_cameras": active_count
+        "total_alerts": db.query(Alert).filter(func.date(Alert.timestamp) == today).count(),
+        "total_vehicles": db.query(VehicleCheck).filter(func.date(VehicleCheck.time_in) == today).count(),
+        "active_cameras": db.query(Camera).filter(Camera.is_active == True).count()
     }
 
 @app.post("/api/zones")
@@ -512,16 +511,14 @@ def get_vehicle_checks(response: Response, db: Session = Depends(get_db)):
 @app.get("/api/ppe/stats")
 def get_ppe_stats(response: Response, db: Session = Depends(get_db)):
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    today = datetime.date.today()
-    tomorrow = today + datetime.timedelta(days=1)
-    
     from database import PPEViolation
+    today = datetime.date.today()
+    
     stats = {}
     for v_type in ["helmet", "no_helmet", "vest", "no_vest"]:
         count = db.query(PPEViolation).filter(
             PPEViolation.violation_type == v_type,
-            PPEViolation.timestamp >= today,
-            PPEViolation.timestamp < tomorrow
+            func.date(PPEViolation.timestamp) == today
         ).count()
         stats[v_type] = count
     return stats
@@ -589,10 +586,10 @@ def generate_frames(camera_id, show_detections=True):
         else:
             frame = active_cameras[camera_id]["frame"].copy()
             status = active_cameras[camera_id].get("status", "Active")
-            fid = active_cameras[camera_id].get("frame_id", 0)
+            fid = active_cameras[camera_id].get("processed_frames", 0) # Use the correct key
             
             if show_detections:
-                detections = active_cameras[camera_id]["detections"]
+                detections = active_cameras[camera_id].get("detections", [])
                 # Get actual frame dimensions for scaling
                 h, w = frame.shape[:2]
                 for det in detections:
@@ -650,26 +647,34 @@ async def video_feed(camera_id: int, detect: bool = True):
                     await anyio.sleep(0.5)
                     continue
                     
-                # --- REDIS-BASED FRAME RETRIEVAL ---
+                # --- ATOMIC REDIS-BASED FRAME RETRIEVAL ---
                 try:
-                    # 1. Pull Latest Frame from Redis
-                    frame_bytes = r.get(f"camera:{camera_id}:frame")
+                    # Pull Latest Batch (Frame + Detections) from Redis
+                    batch_raw = r.get(f"camera:{camera_id}:batch")
                     
-                    if frame_bytes is None:
-                        # If Redis is empty, show placeholder
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                        await anyio.sleep(0.1)
-                        continue
-                    
-                    # 2. Pull Detections from Redis (for drawing)
-                    if detect:
-                        dets_raw = r.get(f"camera:{camera_id}:detections")
-                        if dets_raw:
+                    if batch_raw is None:
+                        # Fallback to direct memory if Redis is slow/empty
+                        if camera_id in active_cameras and active_cameras[camera_id].get("frame") is not None:
+                            frame = active_cameras[camera_id]["frame"]
+                            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                            frame_bytes = buffer.tobytes()
+                        else:
+                            yield (b'--frame\r\n'
+                                   b'Content-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                            await anyio.sleep(0.1)
+                            continue
+                    else:
+                        batch = json.loads(batch_raw.decode('utf-8'))
+                        frame_bytes = base64.b64decode(batch["frame"])
+                        detections = batch.get("detections", [])
+                        
+                        if detect and detections:
                             try:
-                                detections = json.loads(dets_raw.decode('utf-8'))
                                 image = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
                                 for det in detections:
+                                    if not det.get("visible", True):
+                                        continue
+                                        
                                     x1, y1, x2, y2 = det["xyxy"]
                                     label = f"{det.get('class_name', 'object')} {det.get('global_id', '')}".strip()
                                     color = (0, 255, 0)
@@ -682,7 +687,7 @@ async def video_feed(camera_id: int, detect: bool = True):
                             except Exception as e:
                                 print(f"Drawing error in main.py: {e}")
                     
-                    # 3. Yield the MJPEG frame
+                    # Yield the MJPEG frame
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
                     
@@ -691,11 +696,23 @@ async def video_feed(camera_id: int, detect: bool = True):
                     await anyio.sleep(0.1)
                 
                 # Control frame rate
-                await anyio.sleep(0.03) # ~30 FPS
+                await anyio.sleep(0.033) # ~30 FPS
         except Exception as e:
             print(f"[MAIN FEED DEAD] Cam {camera_id}: {e}")
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+@app.get("/api/detections")
+def get_detection_logs(start_date: Optional[str] = None, end_date: Optional[str] = None, db: Session = Depends(get_db)):
+    from database import DetectionLog
+    query = db.query(DetectionLog)
+    
+    if start_date:
+        query = query.filter(DetectionLog.timestamp >= datetime.datetime.fromisoformat(start_date))
+    if end_date:
+        query = query.filter(DetectionLog.timestamp <= datetime.datetime.fromisoformat(end_date))
+        
+    return query.order_by(DetectionLog.timestamp.desc()).limit(100).all()
 
 if __name__ == "__main__":
     import uvicorn
