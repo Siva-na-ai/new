@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, BackgroundTasks, Body, UploadFile, File, Response
 import httpx
+import base64
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
@@ -303,10 +304,8 @@ def add_camera(ip_address: str, place_name: str, detections: str, background_tas
         else:
             # Store names as strings directly to avoid ID mismatch with different models
             VALID_CLASSES = [
-                "person", "helmet", "no_helmet", "vest", "no_vest", "license_plate",
-                "box_opened", "box_closed", "forklift", "collision", "truck_covered", 
-                "truck_not_covered", "person_not_working", "person_standing", "person_working",
-                "vehicle", "car", "bus", "truck", "motorcycle"
+                "box_open", "box_close", "helmet", "no_helmet", "no_vest", "person_with_vest",
+                "person", "license_plate", "person_not_working", "person_standing", "person_working"
             ]
             det_list = sorted(list(set(i.strip().lower() for i in detections.split(",") if i.strip().lower() in VALID_CLASSES)))
     except Exception as e:
@@ -335,10 +334,8 @@ def update_camera(camera_id: int, ip_address: str, place_name: str, detections: 
         else:
             # Store names as strings directly
             VALID_CLASSES = [
-                "person", "helmet", "no_helmet", "vest", "no_vest", "license_plate",
-                "box_opened", "box_closed", "forklift", "collision", "truck_covered", 
-                "truck_not_covered", "person_not_working", "person_standing", "person_working",
-                "vehicle", "car", "bus", "truck", "motorcycle"
+                "box_open", "box_close", "helmet", "no_helmet", "no_vest", "person_with_vest",
+                "person", "license_plate", "person_not_working", "person_standing", "person_working"
             ]
             det_list = sorted(list(set(i.strip().lower() for i in detections.split(",") if i.strip().lower() in VALID_CLASSES)))
     except Exception as e:
@@ -515,7 +512,7 @@ def get_ppe_stats(response: Response, db: Session = Depends(get_db)):
     today = datetime.date.today()
     
     stats = {}
-    for v_type in ["helmet", "no_helmet", "vest", "no_vest"]:
+    for v_type in ["helmet", "no_helmet", "person_with_vest", "no_vest"]:
         count = db.query(PPEViolation).filter(
             PPEViolation.violation_type == v_type,
             func.date(PPEViolation.timestamp) == today
@@ -702,17 +699,6 @@ async def video_feed(camera_id: int, detect: bool = True):
             
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-@app.get("/api/detections")
-def get_detection_logs(start_date: Optional[str] = None, end_date: Optional[str] = None, db: Session = Depends(get_db)):
-    from database import DetectionLog
-    query = db.query(DetectionLog)
-    
-    if start_date:
-        query = query.filter(DetectionLog.timestamp >= datetime.datetime.fromisoformat(start_date))
-    if end_date:
-        query = query.filter(DetectionLog.timestamp <= datetime.datetime.fromisoformat(end_date))
-        
-    return query.order_by(DetectionLog.timestamp.desc()).limit(100).all()
 
 if __name__ == "__main__":
     import uvicorn

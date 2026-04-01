@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Plus, Check, Play, Settings, Trash2, Power, PowerOff, Monitor } from 'lucide-react'
 
 const DETECTION_CLASSES = [
-  "box_opened", "box_closed", "person", "forklift", "collision", "helmet", "no_helmet", "no_vest", "vest", "license_plate", "truck_covered", "truck_not_covered", "person_not_working", "person_standing", "person_working"
+  "box_open", "box_close", "helmet", "no_helmet", "no_vest", "person_with_vest", "person", "license_plate", "person_not_working", "person_standing", "person_working"
 ]
 
 const CamerasView = ({ isViewer = false }) => {
@@ -19,7 +19,7 @@ const CamerasView = ({ isViewer = false }) => {
     fetch('/api/cameras')
       .then(res => res.json())
       .then(data => {
-        setCameras(data);
+        setCameras(data.map(c => ({ ...c, showDetect: true })));
       });
   };
 
@@ -183,9 +183,9 @@ const CamerasView = ({ isViewer = false }) => {
               {isViewer ? (
                 <div className="stream-container" style={{ position: 'relative' }}>
                   <img 
-                    key={`${cam.id}-${cam.showDetect || false}`}
+                    key={`${cam.id}-${cam.showDetect}`}
                     className="stream-img" 
-                    src={`${WORKER_BASE}/video_feed/${cam.id}?detect=${cam.showDetect || false}&t=${timestamp}`} 
+                    src={`${WORKER_BASE}/video_feed/${cam.id}?detect=${!!cam.showDetect}&t=${timestamp}`} 
                     alt="stream" 
                   />
                   <button 
@@ -207,7 +207,7 @@ const CamerasView = ({ isViewer = false }) => {
                       zIndex: 10
                     }}
                   >
-                    {cam.showDetect ? "AI On" : "AI Off"}
+                    {cam.showDetect ? "Off" : "On"}
                   </button>
                 </div>
               ) : (

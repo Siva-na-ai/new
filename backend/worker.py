@@ -49,7 +49,7 @@ yt_url_cache = {} # {url: {"resolved": url, "expires": timestamp}}
 # Global AI Engine Instances (Same as before, with Lock)
 ai_lock = threading.Lock()
 # Initialize with automatic device detection (cuda/cpu)
-shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "C:/Users/user/Downloads/yolo_models/runs/detect/yolov8_cus_emp9/weights/last.pt"))
+shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "best_res2.pt"))
 shared_reid = ReID()
 shared_global_id = GlobalIDManager()
 # Initialize OCR Engine (PaddleOCR with EasyOCR Fallback)

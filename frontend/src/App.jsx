@@ -9,7 +9,6 @@ import YoutubeView from './components/YoutubeView'
 import EntryLogs from './components/EntryLogs'
 import UploadView from './components/UploadView'
 import PPELogs from './components/PPELogs'
-import DetectionHistory from './components/DetectionHistory'
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('vision_auth') === 'true');
@@ -103,7 +102,6 @@ function App() {
           <Route path="/upload" element={<UploadView />} />
           <Route path="/logs" element={<EntryLogs />} />
           <Route path="/ppe" element={<PPELogs />} />
-          <Route path="/detections" element={<DetectionHistory />} />
         </Route>
         {/* Redirect unknown routes */}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

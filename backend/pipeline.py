@@ -76,7 +76,7 @@ class Pipeline:
                 
                 # ESSENTIAL: We MUST detect people if PPE or Zones are active, 
                 # even if not requested by user for "visible" display.
-                if any(k in requested for k in ["helmet", "no_helmet", "vest", "no_vest"]) or self.zones:
+                if any(k in requested for k in ["helmet", "no_helmet", "person_with_vest", "no_vest"]) or self.zones:
                     if "person" not in requested: requested.append("person")
                     for p_cls in ["person_working", "person_not_working", "person_standing"]:
                         if p_cls not in requested: requested.append(p_cls)
@@ -203,52 +203,13 @@ class Pipeline:
                 
             self.global_id_manager.cleanup(self.frame_count)
             
-        # 7. LOG ALL DETECTIONS to History (New Requirement)
-        self.log_detections_to_history(detections, frame)
 
         return detections, [z.polygon_points for z in self.zones]
 
-    def log_detections_to_history(self, detections, frame):
-        """Saves significant detections to the database history with a secure hash."""
-        import hashlib
-        db = SessionLocal()
-        try:
-            for det in detections:
-                # We log detections every 30 frames for the same track to avoid DB bloat
-                track_id = det.get("track_id")
-                if track_id and self.frame_count % 30 == 0:
-                    x1, y1, x2, y2 = det["xyxy"]
-                    # Create a "bcrypt-style" secure hash for the metadata as requested
-                    meta_str = f"{det['class_name']}-{self.camera_id}-{datetime.datetime.now().isoformat()}"
-                    meta_hash = hashlib.sha256(meta_str.encode()).hexdigest()
-                    
-                    # Capture a small thumbnail
-                    crop = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
-                    img_base64 = None
-                    if crop.size > 0:
-                        _, buffer = cv2.imencode('.jpg', cv2.resize(crop, (150, 150)), [int(cv2.IMWRITE_JPEG_QUALITY), 50])
-                        img_base64 = base64.b64encode(buffer).decode('utf-8')
-
-                    from database import DetectionLog
-                    new_log = DetectionLog(
-                        camera_id=self.camera_id,
-                        camera_name=self.camera_name,
-                        class_name=det["class_name"],
-                        confidence=det["conf"],
-                        image_data=img_base64,
-                        metadata_hash=meta_hash
-                    )
-                    db.add(new_log)
-            db.commit()
-        except Exception as e:
-            print(f"[PIPELINE LOG ERROR] {e}")
-            db.rollback()
-        finally:
-            db.close()
 
     def handle_ppe_detection(self, detections, frame):
         persons = [d for d in detections if d["class_name"] in ["person", "person_working", "person_not_working", "person_standing"]]
-        ppe_items = [d for d in detections if d["class_name"] in ["helmet", "no_helmet", "vest", "no_vest"]]
+        ppe_items = [d for d in detections if d["class_name"] in ["helmet", "no_helmet", "person_with_vest", "no_vest"]]
         
         for person in persons:
             p_x1, p_y1, p_x2, p_y2 = person["xyxy"]
@@ -277,9 +238,9 @@ class Pipeline:
                     explicit_item = next((item for item in associated_ppe if item["class_name"] == "no_helmet"), None)
                     potential_violations.append(("no_helmet", explicit_item))
             
-            check_vest = any(k in self.user_requested_classes for k in ["vest", "no_vest"])
+            check_vest = any(k in self.user_requested_classes for k in ["person_with_vest", "no_vest"])
             if check_vest:
-                if "no_vest" in v_types or ("vest" not in v_types and "no_vest" not in v_types):
+                if "no_vest" in v_types or ("person_with_vest" not in v_types and "no_vest" not in v_types):
                     explicit_item = next((item for item in associated_ppe if item["class_name"] == "no_vest"), None)
                     potential_violations.append(("no_vest", explicit_item))
                 

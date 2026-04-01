@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck, Film } from 'lucide-react';
+import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck } from 'lucide-react';
 
 const Layout = ({ loggedUser, onLogout }) => {
   const [alarmActive, setAlarmActive] = useState(false);
@@ -268,9 +268,6 @@ const Layout = ({ loggedUser, onLogout }) => {
           </NavLink>
           <NavLink to="/ppe" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <UserCheck size={20} /> PPE Monitoring
-          </NavLink>
-          <NavLink to="/detections" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Film size={20} /> Detection history
           </NavLink>
           
           {/* Test Alarm / Unlock Button */}

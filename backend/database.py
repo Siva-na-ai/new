@@ -77,7 +77,7 @@ class PPEViolation(Base):
     id = Column(Integer, primary_key=True, index=True)
     track_id = Column(Integer)
     global_id = Column(Integer)
-    violation_type = Column(String)  # 'no_helmet', 'no_vest', 'helmet', 'vest'
+    violation_type = Column(String)  # 'no_helmet', 'no_vest', 'helmet', 'person_with_vest'
     image_data = Column(String)  # Base64 encoded image data
     timestamp = Column(DateTime, default=datetime.datetime.now)
     camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
@@ -90,17 +90,6 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     password = Column(String)
 
-class DetectionLog(Base):
-    __tablename__ = "detection_history"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.datetime.now)
-    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
-    camera_name = Column(String)
-    class_name = Column(String)
-    confidence = Column(Float)
-    image_data = Column(String) # Base64 encoded crop or thumbnail
-    metadata_hash = Column(String) # For 'bcrypt' requirement (hashed metadata)
 
 def init_db():
     Base.metadata.create_all(bind=engine)

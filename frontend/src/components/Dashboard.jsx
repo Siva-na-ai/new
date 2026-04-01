@@ -150,10 +150,10 @@ const Dashboard = () => {
                <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO HELMET</p>
                <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#ef4444' }}>{ppeStats.no_helmet}</div>
             </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #f97316' }}>
-               <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO VEST</p>
-               <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#f97316' }}>{ppeStats.no_vest}</div>
-            </div>
+             <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #f97316' }}>
+                <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO VEST</p>
+                <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#f97316' }}>{ppeStats.no_vest}</div>
+             </div>
          </div>
       </div>
 
