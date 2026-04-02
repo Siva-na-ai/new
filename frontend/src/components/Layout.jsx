@@ -114,15 +114,26 @@ const Layout = ({ loggedUser, onLogout }) => {
     const interval = setInterval(() => {
       // 1. Poll Alerts
       fetch('/api/alerts')
-        .then(res => res.ok ? res.json() : [])
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+          return res.json();
+        })
         .then(data => {
           if (Array.isArray(data) && data.length > 0) {
             const newest = data[0];
             const currentId = Number(newest.id);
             const baselineId = lastAlertIdRef.current !== null ? Number(lastAlertIdRef.current) : null;
 
+            // Handle database reset or bad baseline
+            if (baselineId !== null && currentId < baselineId) {
+              addUiLog(`📉 Alert ID reset detected (${baselineId} -> ${currentId}). Syncing...`);
+              lastAlertIdRef.current = currentId;
+              localStorage.setItem('vision_last_alert_id', currentId.toString());
+              return;
+            }
+
             if (baselineId !== null && currentId > baselineId) {
-              addUiLog(`🚨 ALERT: ${newest.camera_name} - Restriction Breach`);
+              addUiLog(`🚨 NEW ALERT DETECTED [ID: ${currentId} @ ${newest.camera_name}]`);
               setLatestAlert(newest);
               setAlarmActive(true);
               lastAlertIdRef.current = currentId;
@@ -131,13 +142,17 @@ const Layout = ({ loggedUser, onLogout }) => {
               if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification(`🚨 SECURITY ALERT`, { body: `Violation at ${newest.camera_name}`, tag: 'alert-' + newest.id });
               }
-              if (audioRef.current) audioRef.current.play().then(playSiren).catch(() => {});
+              if (audioRef.current) audioRef.current.play().then(playSiren).catch(e => addUiLog(`🔇 Audio Play Failed: ${e.message}`));
             } else if (baselineId === null) {
+              addUiLog(`✅ Monitoring Alerts (Baseline: ${currentId})`);
               lastAlertIdRef.current = currentId;
+              localStorage.setItem('vision_last_alert_id', currentId.toString());
             }
           }
         })
-        .catch(() => {});
+        .catch(err => {
+          if (Math.random() < 0.1) addUiLog(`⚠️ Alert Polling Error: ${err.message}`);
+        });
 
       // 2. Poll Vehicles
       fetch('/api/vehicles')

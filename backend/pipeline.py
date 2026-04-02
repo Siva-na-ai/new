@@ -112,6 +112,7 @@ class Pipeline:
         for zone in self.zones:
             poly = Polygon(zone.polygon_points)
             if poly.buffer(50).contains(p): # 50px buffer
+                # print(f"[Z-DEBUG] Cam {self.camera_id} Obj near Zone {zone.id}")
                 return True
         return False
 
@@ -331,7 +332,7 @@ class Pipeline:
                     break
                 
                 self.delivered_alerts[alert_key] = now
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Zone violation: {detection['class_name']} in Zone #{zone.id}")
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚨 INTRUSION DETECTED: Cam {self.camera_id}, Zone {zone.id}, Class {detection['class_name']}")
                 
                 # Save alert to DB with fresh session
                 db = SessionLocal()
