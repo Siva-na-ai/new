@@ -49,6 +49,7 @@ body {
   padding: 32px 20px;
   gap: 40px;
   z-index: 10;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s ease;
 }
 
 .logo {
@@ -125,8 +126,20 @@ body {
 
 .grid-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
   gap: 32px;
+  width: 100%;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  width: 100%;
+}
+
+.wide-card {
+  grid-column: 1 / -1;
 }
 
 .stream-container {
@@ -143,7 +156,50 @@ body {
 .stream-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #000;
+}
+
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 80px;
+    padding: 32px 12px;
+    align-items: center;
+  }
+  .sidebar .logo span, 
+  .sidebar .nav-item span,
+  .sidebar .nav-item div[style*='cursor: pointer'] span {
+    display: none;
+  }
+  .nav-item {
+    justify-content: center;
+    padding: 12px;
+  }
+  .sidebar span { display: none; }
+  .logo { gap: 0; }
+}
+
+@media (max-width: 768px) {
+  .app-container {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    padding: 10px 20px;
+    gap: 20px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-group {
+    flex-direction: row;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .main-content {
+    padding: 20px;
+  }
 }
 
 /* Tables */
@@ -288,4 +344,53 @@ button[style*='rgba(255,0,0']:hover {
   width: 450px;
   box-shadow: 0 0 50px rgba(244, 63, 94, 0.5);
   animation: modalIn 0.3s ease;
+}
+
+/* Fullscreen Overlay Styles */
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.95);
+  backdrop-filter: blur(20px);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  padding: 40px;
+}
+
+.fullscreen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.fullscreen-stream-container {
+  flex: 1;
+  background: #000;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.icon-btn:hover {
+  background: var(--primary);
+  transform: scale(1.1);
 }

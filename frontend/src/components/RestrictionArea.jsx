@@ -12,13 +12,19 @@ const RestrictionArea = () => {
   const imgRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/cameras')
+    const token = localStorage.getItem('vision_token');
+    fetch('/api/cameras', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(data => setCameras(data));
   }, []);
 
   const fetchZones = (camId) => {
-    fetch(`/api/zones/${camId}`)
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/zones/${camId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch zones');
         return res.json();
@@ -105,9 +111,13 @@ const RestrictionArea = () => {
   }, [points, existingZones, imgSize]);
 
   const handleSubmitZone = () => {
+    const token = localStorage.getItem('vision_token');
     fetch(`/api/zones?camera_id=${selectedCam.id}&activation_time=${activationTime}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify(points)
     })
     .then(res => res.json())
@@ -120,7 +130,11 @@ const RestrictionArea = () => {
   };
 
   const handleDeleteZone = (zoneId) => {
-    fetch(`/api/zones/${zoneId}`, { method: 'DELETE' })
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/zones/${zoneId}`, { 
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(() => fetchZones(selectedCam.id));
   };
 

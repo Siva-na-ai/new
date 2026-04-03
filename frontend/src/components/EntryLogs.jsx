@@ -10,7 +10,10 @@ const EntryLogs = () => {
   const fetchLogs = () => {
     setIsSyncing(true);
     const t = Date.now();
-    fetch(`/api/vehicles?t=${t}`)
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/vehicles?t=${t}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(data => {
         setLogs(Array.isArray(data) ? data : []);
@@ -25,8 +28,14 @@ const EntryLogs = () => {
 
   useEffect(() => {
     fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    
+    import('socket.io-client').then(({ io }) => {
+       const socket = io();
+       socket.on('new_vehicle', () => {
+          fetchLogs();
+       });
+       return () => socket.disconnect();
+    });
   }, []);
 
   const filteredLogs = logs.filter(log => {

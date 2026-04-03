@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Line, Bar } from 'react-chartjs-2'
 import { UserCheck } from 'lucide-react'
+import { io } from 'socket.io-client';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -43,13 +44,15 @@ const Dashboard = () => {
   const fetchData = () => {
     setIsSyncing(true);
     const t = Date.now(); // Cache-busting timestamp
+    const token = localStorage.getItem('vision_token');
+    const headers = { 'Authorization': `Bearer ${token}` };
     
     Promise.all([
-      fetch(`${API_BASE}/alerts?t=${t}`).then(res => res.ok ? res.json() : []),
-      fetch(`${API_BASE}/vehicles?t=${t}`).then(res => res.ok ? res.json() : []),
-      fetch(`${API_BASE}/cameras?t=${t}`).then(res => res.ok ? res.json() : []),
-      fetch(`${API_BASE}/stats?t=${t}`).then(res => res.ok ? res.json() : { total_alerts: 0, total_vehicles: 0, active_cameras: 0 }),
-      fetch(`${API_BASE}/ppe/stats?t=${t}`).then(res => res.ok ? res.json() : { helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 })
+      fetch(`${API_BASE}/alerts?t=${t}`, { headers }).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/vehicles?t=${t}`, { headers }).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/cameras?t=${t}`, { headers }).then(res => res.ok ? res.json() : []),
+      fetch(`${API_BASE}/stats?t=${t}`, { headers }).then(res => res.ok ? res.json() : { total_alerts: 0, total_vehicles: 0, active_cameras: 0 }),
+      fetch(`${API_BASE}/ppe/stats?t=${t}`, { headers }).then(res => res.ok ? res.json() : { helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 })
     ]).then(([alertData, checkData, camData, statData, ppeData]) => {
       setAlerts(Array.isArray(alertData) ? alertData : []);
       setVehicleChecks(Array.isArray(checkData) ? checkData : []);
@@ -101,9 +104,45 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    fetchData(); // Initial load
+
+    const socket = io();
+    
+    socket.on('new_alert', (newAlert) => {
+       setAlerts(prev => {
+          const updated = [newAlert, ...prev].slice(0, 30);
+          updateChart(updated);
+          return updated;
+       });
+       setStats(prev => ({ ...prev, total_alerts: prev.total_alerts + 1 }));
+       
+       // Update PPE stats if applicable
+       if (['helmet', 'no_helmet', 'vest', 'no_vest'].includes(newAlert.class_name)) {
+          setPpeStats(prev => {
+            const copy = { ...prev };
+            const cls = newAlert.class_name;
+            if (copy[cls] !== undefined) copy[cls] += 1;
+            return copy;
+          });
+       }
+    });
+
+    socket.on('new_vehicle', (newVehicle) => {
+       setVehicleChecks(prev => [newVehicle, ...prev].slice(0, 10));
+       setStats(prev => ({ ...prev, total_vehicles: prev.total_vehicles + 1 }));
+    });
+
+    // We can still softly refresh overall camera statuses every 60 seconds
+    const interval = setInterval(() => {
+       fetch(`${API_BASE}/cameras`).then(res => res.ok ? res.json() : []).then(cams => {
+           if (Array.isArray(cams)) setCameras(cams);
+       });
+    }, 60000);
+
+    return () => {
+       socket.disconnect();
+       clearInterval(interval);
+    };
   }, []);
 
 
@@ -157,7 +196,7 @@ const Dashboard = () => {
          </div>
       </div>
 
-      <div className="grid-layout">
+      <div className="dashboard-grid">
         <div className="glass-card">
           <h3 style={{ marginBottom: '16px' }}>Detection Trends</h3>
           <Line data={chartData} options={{ responsive: true, plugins: { legend: { position: 'bottom' } } }} />
@@ -205,7 +244,7 @@ const Dashboard = () => {
           </div>
         </div>
         
-        <div className="glass-card" style={{ gridColumn: 'span 2' }}>
+        <div className="glass-card wide-card">
           <h3 style={{ marginBottom: '16px' }}>Live Vehicle Logs</h3>
           <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
             <table>

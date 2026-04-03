@@ -13,11 +13,14 @@ const PPELogs = () => {
 
   const fetchLogs = () => {
     setIsSyncing(true);
+    const token = localStorage.getItem('vision_token');
     let url = `/api/ppe/logs?t=${Date.now()}`;
     if (startDate) url += `&start_date=${startDate}`;
     if (endDate) url += `&end_date=${endDate}`;
 
-    fetch(url)
+    fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.ok ? res.json() : [])
       .then(data => {
         setLogs(Array.isArray(data) ? data : []);
@@ -32,8 +35,18 @@ const PPELogs = () => {
 
   useEffect(() => {
     fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    
+    let socketRef;
+    import('socket.io-client').then(({ io }) => {
+       socketRef = io();
+       socketRef.on('new_alert', (alert) => {
+         if (['helmet', 'no_helmet', 'vest', 'no_vest'].includes(alert.class_name)) {
+            setTimeout(fetchLogs, 500); // Small delay to let DB settle
+         }
+       });
+    });
+    
+    return () => socketRef && socketRef.disconnect();
   }, [startDate, endDate]);
 
   const exportToExcel = () => {

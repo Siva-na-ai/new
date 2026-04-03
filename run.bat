@@ -5,7 +5,7 @@ echo ========================================
 echo.
 
 :: Auto-detect location: If in backend folder, cd up
-if exist "..\backend\main.py" (
+if exist "..\node_backend\server.js" (
     cd ..
 )
 
@@ -20,9 +20,9 @@ if %errorlevel% neq 0 (
 )
 echo [OK] Redis is active.
 
-:: Check for backend
-if not exist "backend\main.py" (
-    echo [ERROR] Backend not found in .\backend\main.py
+:: Check for Node backend
+if not exist "node_backend\server.js" (
+    echo [ERROR] Node Backend not found in .\node_backend\server.js
     echo Current Directory: %cd%
     pause
     exit /b
@@ -40,8 +40,8 @@ start "Analysis Worker" cmd /k "cd backend && run_safe_worker.bat"
 
 timeout /t 20 /nobreak > nul
 
-echo [2/3] Launching Management API (Port 8000)...
-start "Backend API" cmd /k "cd backend && run_safe_api.bat"
+echo [2/3] Launching Management API (Port 5000)...
+start "Backend API" cmd /k "cd node_backend && npm install && npm run start"
 
 timeout /t 5 /nobreak > nul
 
@@ -59,7 +59,7 @@ start "Desktop Notifier" cmd /k "cd backend && python notifier.py"
 echo.
 echo ========================================
 echo SYSTEM STARTING...
-echo - Backend: http://localhost:8000
+echo - Backend: http://localhost:5000
 echo - Frontend: http://localhost:3000
 echo.
 echo IF WINDOWS CLOSE IMMEDIATELY: Check your terminal for errors.

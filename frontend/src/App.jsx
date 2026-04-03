@@ -11,7 +11,7 @@ import UploadView from './components/UploadView'
 import PPELogs from './components/PPELogs'
 
 function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('vision_auth') === 'true');
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('vision_token'));
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loggedUser, setLoggedUser] = useState(localStorage.getItem('vision_user') || '');
@@ -28,7 +28,7 @@ function App() {
       throw new Error('Security Alert: Access denied. Please verify your credentials or contact system support.');
     })
     .then(data => {
-      localStorage.setItem('vision_auth', 'true');
+      localStorage.setItem('vision_token', data.token);
       localStorage.setItem('vision_user', data.username);
       setIsLoggedIn(true);
       setLoggedUser(data.username);
@@ -39,7 +39,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('vision_auth');
+    localStorage.removeItem('vision_token');
     localStorage.removeItem('vision_user');
     setIsLoggedIn(false);
   };
@@ -94,14 +94,14 @@ function App() {
       <Routes>
         <Route element={<Layout loggedUser={loggedUser} onLogout={handleLogout} />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/cameras" element={<CamerasView />} />
-          <Route path="/viewer" element={<CamerasView isViewer />} />
-          <Route path="/zones" element={<RestrictionArea />} />
-          <Route path="/youtube" element={<YoutubeView />} />
-          <Route path="/upload" element={<UploadView />} />
-          <Route path="/logs" element={<EntryLogs />} />
-          <Route path="/ppe" element={<PPELogs />} />
+          <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
+          <Route path="/cameras" element={<CamerasView onLogout={handleLogout} />} />
+          <Route path="/viewer" element={<CamerasView isViewer onLogout={handleLogout} />} />
+          <Route path="/zones" element={<RestrictionArea onLogout={handleLogout} />} />
+          <Route path="/youtube" element={<YoutubeView onLogout={handleLogout} />} />
+          <Route path="/upload" element={<UploadView onLogout={handleLogout} />} />
+          <Route path="/logs" element={<EntryLogs onLogout={handleLogout} />} />
+          <Route path="/ppe" element={<PPELogs onLogout={handleLogout} />} />
         </Route>
         {/* Redirect unknown routes */}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

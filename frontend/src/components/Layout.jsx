@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck } from 'lucide-react';
+import { io } from 'socket.io-client';
 
 const Layout = ({ loggedUser, onLogout }) => {
   const [alarmActive, setAlarmActive] = useState(false);
@@ -102,82 +103,73 @@ const Layout = ({ loggedUser, onLogout }) => {
     };
     window.addEventListener('click', unlockAudio);
 
-    // Initial fetch to set baseline alert IDs
-    fetch('/api/alerts')
-      .then(res => res.json())
+    const token = localStorage.getItem('vision_token');
+
+    fetch('/api/alerts', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => {
+        if (res.status === 401 || res.status === 403) onLogout();
+        return res.json();
+      })
       .then(data => { if (Array.isArray(data) && data.length > 0) lastAlertIdRef.current = data[0].id; });
 
-    fetch('/api/vehicles')
-      .then(res => res.json())
+    fetch('/api/vehicles', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => {
+        if (res.status === 401 || res.status === 403) onLogout();
+        return res.json();
+      })
       .then(data => { if (Array.isArray(data) && data.length > 0) lastVehicleIdRef.current = data[0].id; });
 
-    const interval = setInterval(() => {
-      // 1. Poll Alerts
-      fetch('/api/alerts')
-        .then(res => {
-          if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-          return res.json();
-        })
-        .then(data => {
-          if (Array.isArray(data) && data.length > 0) {
-            const newest = data[0];
-            const currentId = Number(newest.id);
-            const baselineId = lastAlertIdRef.current !== null ? Number(lastAlertIdRef.current) : null;
+    const socket = io();
 
-            // Handle database reset or bad baseline
-            if (baselineId !== null && currentId < baselineId) {
-              addUiLog(`📉 Alert ID reset detected (${baselineId} -> ${currentId}). Syncing...`);
-              lastAlertIdRef.current = currentId;
-              localStorage.setItem('vision_last_alert_id', currentId.toString());
-              return;
-            }
+    socket.on('new_alert', (newest) => {
+      const currentId = Number(newest.id);
+      const baselineId = lastAlertIdRef.current !== null ? Number(lastAlertIdRef.current) : null;
 
-            if (baselineId !== null && currentId > baselineId) {
-              addUiLog(`🚨 NEW ALERT DETECTED [ID: ${currentId} @ ${newest.camera_name}]`);
-              setLatestAlert(newest);
-              setAlarmActive(true);
-              lastAlertIdRef.current = currentId;
-              localStorage.setItem('vision_last_alert_id', currentId.toString());
-              
-              if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification(`🚨 SECURITY ALERT`, { body: `Violation at ${newest.camera_name}`, tag: 'alert-' + newest.id });
-              }
-              if (audioRef.current) audioRef.current.play().then(playSiren).catch(e => addUiLog(`🔇 Audio Play Failed: ${e.message}`));
-            } else if (baselineId === null) {
-              addUiLog(`✅ Monitoring Alerts (Baseline: ${currentId})`);
-              lastAlertIdRef.current = currentId;
-              localStorage.setItem('vision_last_alert_id', currentId.toString());
-            }
-          }
-        })
-        .catch(err => {
-          if (Math.random() < 0.1) addUiLog(`⚠️ Alert Polling Error: ${err.message}`);
-        });
+      // Handle database reset or bad baseline
+      if (baselineId !== null && currentId < baselineId) {
+        addUiLog(`📉 Alert ID reset detected (${baselineId} -> ${currentId}). Syncing...`);
+        lastAlertIdRef.current = currentId;
+        localStorage.setItem('vision_last_alert_id', currentId.toString());
+        return;
+      }
 
-      // 2. Poll Vehicles
-      fetch('/api/vehicles')
-        .then(res => res.ok ? res.json() : [])
-        .then(data => {
-          if (Array.isArray(data) && data.length > 0) {
-            const newest = data[0];
-            const currentId = Number(newest.id);
-            const baselineId = lastVehicleIdRef.current !== null ? Number(lastVehicleIdRef.current) : null;
+      if (baselineId !== null && currentId > baselineId) {
+        addUiLog(`🚨 NEW ALERT DETECTED [ID: ${currentId} @ ${newest.camera_name}]`);
+        setLatestAlert(newest);
+        setAlarmActive(true);
+        lastAlertIdRef.current = currentId;
+        localStorage.setItem('vision_last_alert_id', currentId.toString());
+        
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`🚨 SECURITY ALERT`, { body: `Violation at ${newest.camera_name}`, tag: 'alert-' + newest.id });
+        }
+        if (audioRef.current) audioRef.current.play().then(playSiren).catch(e => addUiLog(`🔇 Audio Play Failed: ${e.message}`));
+      } else if (baselineId === null) {
+        addUiLog(`✅ Monitoring Alerts (Baseline: ${currentId})`);
+        lastAlertIdRef.current = currentId;
+        localStorage.setItem('vision_last_alert_id', currentId.toString());
+      }
+    });
 
-            if (baselineId !== null && currentId > baselineId) {
-              addUiLog(`🚗 VEHICLE: ${newest.camera_name} - Detected [${newest.plate_number}]`);
-              lastVehicleIdRef.current = currentId;
-              localStorage.setItem('vision_last_vehicle_id', currentId.toString());
-              playBeep(); // Short beep for vehicles
-            } else if (baselineId === null) {
-              lastVehicleIdRef.current = currentId;
-            }
-          }
-        })
-        .catch(() => {});
+    socket.on('new_vehicle', (newest) => {
+      const currentId = Number(newest.id);
+      const baselineId = lastVehicleIdRef.current !== null ? Number(lastVehicleIdRef.current) : null;
 
-    }, 1500); // Increased polling speed for better responsiveness
+      if (baselineId !== null && currentId > baselineId) {
+        addUiLog(`🚗 VEHICLE: ${newest.camera_name} - Detected [${newest.plate_number}]`);
+        lastVehicleIdRef.current = currentId;
+        localStorage.setItem('vision_last_vehicle_id', currentId.toString());
+        playBeep(); // Short beep for vehicles
+      } else if (baselineId === null) {
+        lastVehicleIdRef.current = currentId;
+      }
+    });
 
-    return () => clearInterval(interval);
+    return () => socket.disconnect();
   }, []);
 
   const dismissAlarm = () => {
@@ -261,28 +253,28 @@ const Layout = ({ loggedUser, onLogout }) => {
         
         <div className="nav-group">
           <NavLink to="/dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <LayoutDashboard size={20} /> Dashboard
+            <LayoutDashboard size={20} /> <span>Dashboard</span>
           </NavLink>
           <NavLink to="/cameras" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Camera size={20} /> Manage Cams
+            <Camera size={20} /> <span>Manage Cams</span>
           </NavLink>
           <NavLink to="/viewer" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Search size={20} /> Live Viewer
+            <Search size={20} /> <span>Live Viewer</span>
           </NavLink>
           <NavLink to="/zones" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <ShieldAlert size={20} /> Restriction Area
+            <ShieldAlert size={20} /> <span>Restriction Area</span>
           </NavLink>
           <NavLink to="/youtube" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Youtube size={20} /> YouTube Monitoring
+            <Youtube size={20} /> <span>YouTube Monitoring</span>
           </NavLink>
           <NavLink to="/upload" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Upload size={20} /> Upload Video
+            <Upload size={20} /> <span>Upload Video</span>
           </NavLink>
           <NavLink to="/logs" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <History size={20} /> Entry Logs
+            <History size={20} /> <span>Entry Logs</span>
           </NavLink>
           <NavLink to="/ppe" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <UserCheck size={20} /> PPE Monitoring
+            <UserCheck size={20} /> <span>PPE Monitoring</span>
           </NavLink>
           
           {/* Test Alarm / Unlock Button */}
@@ -305,7 +297,7 @@ const Layout = ({ loggedUser, onLogout }) => {
 
         <div style={{ marginTop: 'auto' }}>
           <div className="nav-item" onClick={onLogout} style={{ cursor: 'pointer' }}>
-            <LogOut size={20} /> Logout ({loggedUser})
+            <LogOut size={20} /> <span>Logout ({loggedUser})</span>
           </div>
         </div>
       </div>
@@ -336,41 +328,7 @@ const Layout = ({ loggedUser, onLogout }) => {
           </span>
         </div>
 
-        {/* Mini Debug Console */}
-        <div style={{
-          position: 'fixed',
-          bottom: '20px',
-          right: '20px',
-          width: '320px', // Slightly wider
-          maxHeight: '200px', // Limit height
-          overflowY: 'auto', // Scrollable
-          background: 'rgba(0,0,0,0.85)',
-          border: '1px solid rgba(255,255,255,0.15)',
-          borderRadius: '12px',
-          padding: '12px',
-          fontSize: '11px',
-          fontFamily: 'monospace',
-          color: '#34d399',
-          zIndex: 999,
-          pointerEvents: 'auto', // Allow scrolling
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(10px)'
-        }}>
-          <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.1)', pb: '4px', fontSize: '10px', color: '#64748b' }}>SYSTEM MONITOR v2.0</div>
-          {uiLogs.map((log, i) => <div key={i} style={{ marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{log}</div>)}
-          {uiLogs.length === 0 && <div style={{ opacity: 0.5 }}>Waiting for activity...</div>}
-          <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '4px', pointerEvents: 'auto' }}>
-            <a href="/api/alarm-sound" target="_blank" style={{ color: '#34d399', textDecoration: 'underline', fontSize: '9px' }}>
-              🔗 File
-            </a>
-            <button onClick={playBeep} style={{ background: 'none', border: '1px solid #34d399', color: '#34d399', fontSize: '9px', padding: '1px 3px', borderRadius: '4px', cursor: 'pointer' }}>
-              🎵 Beep
-            </button>
-            <button onClick={playSiren} style={{ background: '#ef4444', border: 'none', color: 'white', fontSize: '9px', padding: '1px 3px', borderRadius: '4px', cursor: 'pointer', fontWeight: 700 }}>
-              🚨 Siren
-            </button>
-          </div>
-        </div>
+
 
         <Outlet />
       </div>

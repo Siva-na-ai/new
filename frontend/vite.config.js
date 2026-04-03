@@ -8,7 +8,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:5000',
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path,
@@ -22,6 +22,10 @@ export default defineConfig({
         },
         timeout: 600000, // 10 minutes timeout for large files
         proxyTimeout: 600000 
+      },
+      '/socket.io': {
+        target: 'http://localhost:5000',
+        ws: true
       }
     }
   }

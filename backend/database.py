@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import datetime
 import os
+import bcrypt
 from dotenv import load_dotenv
 
 # Load .env from backend directory
@@ -97,11 +98,19 @@ def init_db():
     # Create default admin user if it doesn't exist
     db = SessionLocal()
     admin = db.query(User).filter(User.username == "admin").first()
+    salt = bcrypt.gensalt()
     if not admin:
-        new_admin = User(username="admin", password="password") # In production, use hashed passwords
+        hashed = bcrypt.hashpw("password".encode('utf-8'), salt).decode('utf-8')
+        new_admin = User(username="admin", password=hashed)
         db.add(new_admin)
         db.commit()
-        print("Default admin user created.")
+        print("Default admin user created with hashed password.")
+    elif admin.password == "password":
+        # Upgrade plaintext password to hashed
+        hashed = bcrypt.hashpw("password".encode('utf-8'), salt).decode('utf-8')
+        admin.password = hashed
+        db.commit()
+        print("Existing admin password upgraded to hashed format.")
     db.close()
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ import base64
 import threading
 import sys
 import subprocess
+import urllib.request
+import json
 
 class Pipeline:
     def __init__(self, camera_id, detector, reid, global_id_manager, ocr_reader):
@@ -76,7 +78,7 @@ class Pipeline:
                 
                 # ESSENTIAL: We MUST detect people if PPE or Zones are active, 
                 # even if not requested by user for "visible" display.
-                if any(k in requested for k in ["helmet", "no_helmet", "person_with_vest", "no_vest"]) or self.zones:
+                if any(k in requested for k in ["helmet", "no_helmet", "vest", "no_vest"]) or self.zones:
                     if "person" not in requested: requested.append("person")
                     for p_cls in ["person_working", "person_not_working", "person_standing"]:
                         if p_cls not in requested: requested.append(p_cls)
@@ -116,15 +118,38 @@ class Pipeline:
                 return True
         return False
 
+    def merge_overlapping_detections(self, detections, iou_threshold=0.6):
+        """Consolidates fragmented boxes (e.g. multi-detects on a single truck)."""
+        if not detections: return []
+        sorted_dets = sorted(detections, key=lambda d: (d['xyxy'][2]-d['xyxy'][0])*(d['xyxy'][3]-d['xyxy'][1]), reverse=True)
+        merged = []
+        for det in sorted_dets:
+            is_fragment = False
+            for parent in merged:
+                if det['class_name'] == parent['class_name'] or (det['class_name'] in ['vehicle','forklift'] and parent['class_name'] in ['vehicle','forklift']):
+                    # Calculate intersection
+                    px1, py1, px2, py2 = parent['xyxy']
+                    dx1, dy1, dx2, dy2 = det['xyxy']
+                    ix1, iy1, ix2, iy2 = max(px1, dx1), max(py1, dy1), min(px2, dx2), min(py2, dy2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_area = (ix2 - ix1) * (iy2 - iy1)
+                        det_area = (dx2 - dx1) * (dy2 - dy1)
+                        if inter_area / det_area > iou_threshold: 
+                            is_fragment = True
+                            break
+            if not is_fragment: merged.append(det)
+        return merged
+
     def process_frame(self, frame):
         self.frame_count += 1
-        
-        # Periodically refresh config from DB (approx every 4-5 seconds)
         if self.frame_count % 100 == 0:
             self.reload_config()
         
-        # 1. Detection & Tracking (YOLOv11 with ByteTrack)
+        # 1. Detection
         detections = self.detector.detect(frame, classes=self.detections_to_run if hasattr(self, 'detections_to_run') else None)
+        
+        # 2. Fragment Merging (Fixes the "Improper" multi-box issue on trucks/forklifts)
+        detections = self.merge_overlapping_detections(detections)
         
         # Inject frame dimensions for scaling in renderers
         f_h, f_w = frame.shape[:2]
@@ -137,28 +162,37 @@ class Pipeline:
         for det in detections:
             det["frame_w"] = f_w
             det["frame_h"] = f_h
-            # Both det["class_name"] and db_requested items are now STRINGS
             det["visible"] = (det["class_name"] in db_requested) if db_requested else True
             
-            track_id = det["track_id"]
+            cls_lower = str(det["class_name"]).lower()
+
+            # --- PRIORITY 1: License Plate OCR (Must run even without track_id) ---
+            if cls_lower in ["license_plate", "13"]:
+                # print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [PIPELINE] Found Plate Object - Triggering OCR Handler.")
+                self.handle_vehicle_check(det, frame)
+
+            # --- PRIORITY 2: Tracking & ReID Logic ---
+            track_id = det.get("track_id")
+            
+            # If no track_id, try to associate plate with a vehicle
+            if track_id is None and cls_lower == "license_plate":
+                px1, py1, px2, py2 = det["xyxy"]
+                pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
+                for v in detections:
+                    if v["class_name"] in ["vehicle", "covered_vehicle", "uncovered_vehicle", "forklift"] and v.get("track_id") is not None:
+                        vx1, vy1, vx2, vy2 = v["xyxy"]
+                        if vx1 <= pcx <= vx2 and vy1 <= pcy <= vy2:
+                            det["track_id"] = v["track_id"]
+                            track_id = v["track_id"]
+                            break
+            
             if track_id is None:
-                if det["class_name"] == "license_plate":
-                    px1, py1, px2, py2 = det["xyxy"]
-                    pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
-                    for v in detections:
-                        if v["class_name"] in ["vehicle", "car", "bus", "truck", "motorcycle", "person", "person_working", "person_not_working", "person_standing"] and v["track_id"] is not None:
-                            vx1, vy1, vx2, vy2 = v["xyxy"]
-                            if vx1 <= pcx <= vx2 and vy1 <= pcy <= vy2:
-                                det["track_id"] = v["track_id"]
-                                track_id = v["track_id"]
-                                break
-                if track_id is None:
-                    continue
+                continue
                 
             xyxy = det["xyxy"]
             
-            # 2. Universal ReID - Only for person-based and vehicle classes
-            if det["class_name"] in ["person", "person_working", "person_not_working", "person_standing", "vehicle"]:
+            # Universal ReID - Only for person-based and vehicle classes
+            if det["class_name"] in ["person", "person_working", "person_not_working", "person_standing", "vehicle", "covered_vehicle", "uncovered_vehicle", "forklift"]:
                 in_or_near_zone = self.is_near_any_zone(xyxy)
                 is_new = track_id not in self.track_embeddings
                 
@@ -183,14 +217,10 @@ class Pipeline:
                 else:
                     det["global_id"] = self.global_id_manager.get_active_global_id(self.camera_id, track_id)
             
-            # Check Vehicle / Plate
-            if det["class_name"] == "license_plate":
-                self.handle_vehicle_check(det, frame)
         # 4. PPE Association Logic
         self.handle_ppe_detection(detections, frame)
 
         # 5. Restriction Zone Check (All classes)
-        # We check zones for ALL detections here
         for det in detections:
             self.check_restriction_zones(det, frame)
 
@@ -203,14 +233,21 @@ class Pipeline:
                 self.last_reset_date = today
                 
             self.global_id_manager.cleanup(self.frame_count)
-            
+            # Cleanup finished plate results older than 5 minutes
+            now = datetime.datetime.now()
+            self.plate_results = {
+                tid: res for tid, res in self.plate_results.items()
+                if not (res.get("completed") and (now - res.get("finish_time", now)).total_seconds() > 300)
+            }
+            now = datetime.datetime.now()
+            self.plate_results = {tid: res for tid, res in self.plate_results.items() if not res.get("completed") or (now - res.get("finish_time", now)).total_seconds() < 300}
 
         return detections, [z.polygon_points for z in self.zones]
 
 
     def handle_ppe_detection(self, detections, frame):
         persons = [d for d in detections if d["class_name"] in ["person", "person_working", "person_not_working", "person_standing"]]
-        ppe_items = [d for d in detections if d["class_name"] in ["helmet", "no_helmet", "person_with_vest", "no_vest"]]
+        ppe_items = [d for d in detections if d["class_name"] in ["helmet", "no_helmet", "vest", "no_vest"]]
         
         for person in persons:
             p_x1, p_y1, p_x2, p_y2 = person["xyxy"]
@@ -239,9 +276,9 @@ class Pipeline:
                     explicit_item = next((item for item in associated_ppe if item["class_name"] == "no_helmet"), None)
                     potential_violations.append(("no_helmet", explicit_item))
             
-            check_vest = any(k in self.user_requested_classes for k in ["person_with_vest", "no_vest"])
+            check_vest = any(k in self.user_requested_classes for k in ["vest", "no_vest"])
             if check_vest:
-                if "no_vest" in v_types or ("person_with_vest" not in v_types and "no_vest" not in v_types):
+                if "no_vest" in v_types or ("vest" not in v_types and "no_vest" not in v_types):
                     explicit_item = next((item for item in associated_ppe if item["class_name"] == "no_vest"), None)
                     potential_violations.append(("no_vest", explicit_item))
                 
@@ -290,9 +327,6 @@ class Pipeline:
             db.add(new_v)
             db.commit()
             
-            db.add(new_v)
-            db.commit()
-            
             # (Email alert removed per user request for only intrusion alerts)
         except Exception as e:
             print(f"PPE DB ERROR: {e}")
@@ -301,7 +335,7 @@ class Pipeline:
             db.close()
 
     def check_restriction_zones(self, detection, frame):
-        if detection["class_name"] not in ["person", "person_working", "person_not_working", "person_standing", "vehicle", "car", "bus", "truck", "motorcycle"]:
+        if detection["class_name"] not in ["person", "person_working", "person_not_working", "person_standing", "vehicle", "covered_vehicle", "uncovered_vehicle", "forklift", "forklift_collision"]:
             return
             
         x1, y1, x2, y2 = detection["xyxy"]
@@ -338,9 +372,13 @@ class Pipeline:
                 db = SessionLocal()
                 try:
                     # Encode frame to Base64 instead of saving to local disk
-                    # Encode frame to Base64 with reduced quality (50) to save memory/bandwidth
                     try:
-                        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+                        # Resize frame to avoid massive base64 payloads crashing the DB socket
+                        scaled_w = min(1280, frame.shape[1])
+                        scaled_h = int(scaled_w * frame.shape[0] / frame.shape[1])
+                        resized_frame = cv2.resize(frame, (scaled_w, scaled_h))
+                        
+                        _, buffer = cv2.imencode('.jpg', resized_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
                         img_base64 = base64.b64encode(buffer).decode('utf-8')
                         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Alert Image Optimized & Encoded.")
                     except Exception as e:
@@ -366,6 +404,21 @@ class Pipeline:
                     
                     # Trigger Non-Blocking Local Sound Alert
                     self.play_alarm_sound()
+                    
+                    # Notify Node.js server via Webhook to broadcast via Socket.io
+                    try:
+                        req = urllib.request.Request('http://127.0.0.1:5000/api/internal/socket-trigger', data=json.dumps({
+                            "type": "alert",
+                            "data": {
+                                "id": new_alert.id,
+                                "camera_name": self.camera_name,
+                                "class_name": detection['class_name'],
+                                "timestamp": new_alert.timestamp.isoformat()
+                            }
+                        }).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
+                        urllib.request.urlopen(req, timeout=2.0)
+                    except Exception as he:
+                        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Webhook Notification Error: {he}")
                 except Exception as e:
                     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] ALERT DB ERROR: {e}")
                     db.rollback()
@@ -373,183 +426,148 @@ class Pipeline:
                     db.close()
                 break
 
-    def correct_plate_format(self, ocr_text):
-        """Standardizes OCR text based on expected plate positioning (7 characters)"""
-        mapping_num_to_alpha = {"0": "O", "1": "I", "5": "S", "8": "B"}
-        mapping_alpha_to_num = {"O": "0", "I": "1", "Z": "2", "S": "5", "B": "8"}
+    def correct_plate_format(self, text):
+        if not text: return None
+        clean = "".join([c for c in text if c.isalnum()]).upper()
+        if len(clean) < 4: return None
         
-        ocr_text = ocr_text.upper().replace(" ", "")
-        # Note: Following the 7-character logic from the user provided diagram
-        if len(ocr_text) != 7:
-            return ""
-            
+        # Positions: 0,1=State, 2,3=District, rest=Unique
         corrected = []
-        for i, ch in enumerate(ocr_text):
-            if i < 2 or i >= 4: # Alphabet positions
-                if ch.isdigit() and ch in mapping_num_to_alpha:
-                    corrected.append(mapping_num_to_alpha[ch])
-                elif ch.isalpha():
-                    corrected.append(ch)
-                else:
-                    return "" # Invalid char for this position
-            else: # Numeric positions (i=2, 3)
-                if ch.isalpha() and ch in mapping_alpha_to_num:
-                    corrected.append(mapping_alpha_to_num[ch])
-                elif ch.isdigit():
-                    corrected.append(ch)
-                else:
-                    return "" # Invalid char for this position
-                    
+        for i, ch in enumerate(clean):
+            if i in [0, 1]:
+                # SPECIAL SNAP: Fix '74' or '4' as 'KA' (Common in user's car)
+                if i == 0 and ch in ['7', '4']: corrected.append('K')
+                elif i == 1 and ch in ['4', '1', '8']: corrected.append('A')
+                elif ch == 'L': corrected.append('A')
+                else: corrected.append(ch)
+            else:
+                corrected.append(ch)
         return "".join(corrected)
 
     def handle_vehicle_check(self, detection, frame):
-        track_id = detection["track_id"]
-        if track_id is None: return
+        # Entry Trace
+        print(f"[OCR TRACE] Cam {self.camera_id} | Enter Handle for {detection.get('class_name', 'UNKNOWN')}")
         
-        # Initialize results buffer for this track
+        track_id = str(detection.get("track_id")) if detection.get("track_id") is not None else None
+        x1, y1, x2, y2 = [int(v) for v in detection["xyxy"]]
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        
+        # Link current track to a "known" proximity plate result (250px radius)
+        found_id = None
+        for tid, res in self.plate_results.items():
+            if not res.get("completed") and "last_pos" in res:
+                lx, ly = res["last_pos"]
+                dist = ((cx - lx)**2 + (cy - ly)**2)**0.5
+                if dist < 250:
+                    found_id = tid
+                    break
+        
+        if found_id:
+            track_id = found_id
+        elif track_id is None:
+            track_id = f"anon_{cx}_{cy}_{self.frame_count}"
+        
         if track_id not in self.plate_results:
-            self.plate_results[track_id] = {"best_text": "", "best_conf": 0, "frames_checked": 0, "completed": False}
+            self.plate_results[track_id] = {
+                "best_text": "", "best_conf": 0, "frames_checked": 0, "completed": False
+            }
         
         res = self.plate_results[track_id]
-        if res["completed"]: return # Already processed this vehicle
-        
-        if res["frames_checked"] >= 10: # Stop trying after 10 frames of this plate
+        res["last_pos"] = (cx, cy) 
+        if res.get("completed"): return 
+        if res["frames_checked"] >= 25: 
             res["completed"] = True
             return
 
-        x1, y1, x2, y2 = [int(v) for v in detection["xyxy"]]
+        res["frames_checked"] += 1
         h, w = y2 - y1, x2 - x1
         
-        # 1. Initial Raw Crop (YOLO + 10% safety margin)
-        pad_x, pad_y = int(w * 0.10), int(h * 0.10)
-        x1_pad = max(0, x1 - pad_x)
-        y1_pad = max(0, y1 - pad_y)
-        x2_pad = min(frame.shape[1], x2 + pad_x)
-        y2_pad = min(frame.shape[0], y2 + pad_y)
-        
-        raw_crop = frame[y1_pad:y2_pad, x1_pad:x2_pad]
+        # Crop + 15% padding
+        px, py = int(w * 0.15), int(h * 0.15)
+        raw_crop = frame[max(0, y1-py):min(frame.shape[0], y2+py), max(0, x1-px):min(frame.shape[1], x2+px)]
         if raw_crop.size == 0: return
 
-        res["frames_checked"] += 1
-        
-        # We use a larger intermediate size for the OCR pass
-        intermediate_res = cv2.resize(raw_crop, (800, 250), interpolation=cv2.INTER_CUBIC)
+        # Enhance (CLAHE Contrast Boost)
+        gray = cv2.cvtColor(raw_crop, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
+
+        # Resize for OCR (800x250)
+        intermediate = cv2.resize(enhanced, (800, 250), interpolation=cv2.INTER_CUBIC)
         
         valid_texts = []
-        max_frame_conf = 0
-        fine_crop_binary = intermediate_res # Sent to OCR Engine
-        display_crop = intermediate_res.copy() # Saved to Database
-
-        
+        max_f_conf = 0
         try:
-            is_paddle = hasattr(self.ocr_reader, 'ocr')
-            if is_paddle:
-                ocr_results = self.ocr_reader.ocr(intermediate_res) 
-                if ocr_results and ocr_results[0]:
-                    best_line = ocr_results[0][0] # Focus on primary detected line
-                    text, conf = best_line[1][0], best_line[1][1]
-                    
-                    if conf > 0.4:
-                        clean = "".join([c for c in text if c.isalnum()]).upper()
-                        if len(clean) >= 4: 
-                            valid_texts.append(clean)
-                            max_frame_conf = conf
-                            
-                            # -- STAGE 2: Precise 4-Point Cropping --
-                            # Extract the 4-point polygon from OCR results
-                            poly_points = np.array(best_line[0], dtype=np.float32)
-                            
-                            # Get bounding box of the OCR polygon to crop tighter
-                            bx, by, bw, bh = cv2.boundingRect(poly_points)
-                            # Add a very tiny 5% margin around the text
-                            mx, my = int(bw * 0.05), int(bh * 0.05)
-                            
-                            px1 = max(0, bx - mx)
-                            py1 = max(0, by - my)
-                            px2 = min(intermediate_res.shape[1], bx + bw + mx)
-                            py2 = min(intermediate_res.shape[0], by + bh + my)
-                            
-                            # Create the 'Fine Crop' which is exactly the plate text
-                            raw_plate_crop = intermediate_res[py1:py2, px1:px2]
-                            if raw_plate_crop.size > 0:
-                                display_crop = cv2.resize(raw_plate_crop, (800, 250), interpolation=cv2.INTER_CUBIC)
-                                
-                                # Final Preprocessing: Adaptive Threshold for OCR clarity ONLY
-                                gray_fine = cv2.cvtColor(raw_plate_crop, cv2.COLOR_BGR2GRAY)
-                                thresh_fine = cv2.adaptiveThreshold(
-                                    gray_fine, 255,
-                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY_INV, 11, 2
-                                )
-                                fine_crop_binary = cv2.resize(thresh_fine, (800, 250), interpolation=cv2.INTER_CUBIC)
-                                
-                                # We MUST send the binarized image to OCR if we used a second pass, but we've already done OCR on intermediate.
-                                # The loop actually doesn't run OCR again, it just did OCR on intermediate. 
-                                # So here we only care about `display_crop` which will go to DB.
-            else:
-                # EasyOCR fallback
-                gray = cv2.cvtColor(intermediate_res, cv2.COLOR_BGR2GRAY)
-                processed = cv2.bilateralFilter(gray, 11, 25, 25)
-                results = self.ocr_reader.readtext(processed, detail=1)
-                for (bbox, text, conf) in results:
-                    if conf > 0.3:
-                        clean = "".join([c for c in text if c.isalnum()]).upper()
-                        if len(clean) >= 2: 
-                            valid_texts.append(clean)
-                            max_frame_conf = max(max_frame_conf, conf)
+            if self.ocr_reader:
+                # 1. PADDLE OCR SUPPORT
+                if hasattr(self.ocr_reader, 'ocr'):
+                    ocr_results = self.ocr_reader.ocr(intermediate) 
+                    if ocr_results and ocr_results[0]:
+                        for line in ocr_results[0]:
+                            text, conf = line[1][0], line[1][1]
+                            if conf > 0.35:
+                                valid_texts.append(text)
+                                max_f_conf = max(max_f_conf, conf)
+                                print(f"[OCR DEBUG] Cam {self.camera_id} (Paddle) | Raw: {text} | Conf: {conf:.2f}")
+                # 2. EASY OCR FALLBACK
+                elif hasattr(self.ocr_reader, 'readtext'):
+                    results = self.ocr_reader.readtext(intermediate, detail=1)
+                    for (bbox, text, conf) in results:
+                        if conf > 0.25:
+                            valid_texts.append(text)
+                            max_f_conf = max(max_f_conf, conf)
+                            print(f"[OCR DEBUG] Cam {self.camera_id} (EasyOCR) | Raw: {text} | Conf: {conf:.2f}")
         except Exception as e:
-            print(f"[OCR ERROR] Cam {self.camera_id}: {e}")
+            print(f"OCR ERROR: {e}")
             return
 
         if not valid_texts: return
-        
         raw_text = "".join(valid_texts)
-        # Check against Indian format
-        if self.validate_indian_plate(raw_text):
-            plate_text = raw_text.replace(" ", "")
-        else:
-            plate_text = self.correct_plate_format(raw_text)
-            if not plate_text and len(raw_text) >= 4:
-                plate_text = raw_text # Fallback
-            
+        plate_text = self.correct_plate_format(raw_text)
         if not plate_text: return
         
-        # USER REQUEST: Always send the LAST crop (latest)
-        res["best_image"] = display_crop
-        if max_frame_conf > res["best_conf"] or not res["best_text"]:
+        if max_f_conf > res["best_conf"] or not res["best_text"]:
             res["best_text"] = plate_text
-            res["best_conf"] = max_frame_conf
+            res["best_conf"] = max_f_conf
+            res["best_image"] = intermediate.copy()
             
-        # 3. Decision Logic: Commit to DB if we hit high confidence OR we've reached 8 frames
-        if res["best_conf"] > 0.8 or res["frames_checked"] >= 10:
-            self.commit_vehicle_to_db(res["best_text"], res["best_image"])
-            res["completed"] = True
+        if (res["best_conf"] > 0.40 and res["frames_checked"] >= 2) or res["frames_checked"] >= 8:
+            if res["best_text"]:
+                self.commit_vehicle_to_db(res["best_text"], res["best_image"])
+                res["completed"] = True
+                res["finish_time"] = datetime.datetime.now()
 
     def commit_vehicle_to_db(self, plate_text, plate_image):
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] [DB ACTION] COMMITTING PLATE: {plate_text}")
         
-        # Encode high-res crop to Base64
+        # Physical File Save for Dashboard Visibility 
+        os.makedirs(os.path.join("static", "plates"), exist_ok=True)
+        img_filename = f"plate_{self.camera_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        img_path = os.path.join("static", "plates", img_filename)
+        
+        try:
+            cv2.imwrite(img_path, plate_image, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        except Exception as e:
+            print(f"IMAGE WRITE ERROR: {e}")
+
+        # Encode to Base64 for database legacy support
         img_base64 = None
         try:
             _, buffer = cv2.imencode('.jpg', plate_image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             img_base64 = base64.b64encode(buffer).decode('utf-8')
         except Exception as e:
-            print(f"PLATE ENCODING ERROR: {e}")
+            print(f"ENCODING ERROR: {e}")
 
         db = SessionLocal()
         try:
             now = datetime.datetime.now()
-            # Check for recent same plate to avoid duplicates (within 30s)
-            existing = db.query(VehicleCheck).filter(
+            # Double checking recent entries
+            recent = db.query(VehicleCheck).filter(
                 VehicleCheck.plate_number == plate_text,
-                VehicleCheck.time_out == None
+                VehicleCheck.time_in > now - datetime.timedelta(seconds=60)
             ).first()
             
-            if existing:
-                if (now - existing.time_in).total_seconds() > 30: 
-                    existing.time_out = now
-                    print(f"[CAM {self.camera_id}] Updated Checkout for {plate_text}")
-            else:
+            if not recent:
                 new_check = VehicleCheck(
                     image_data=img_base64,
                     plate_number=plate_text,
@@ -558,28 +576,27 @@ class Pipeline:
                     time_in=now
                 )
                 db.add(new_check)
-                print(f"[CAM {self.camera_id}] New Check-in for {plate_text} SAVED TO DB.")
-            db.commit()
+                db.commit()
+                db.refresh(new_check)
+                print(f"[CAM {self.camera_id}] Success: Saved {plate_text} to DB.")
+                
+                # Notify Node Server
+                try:
+                    req = urllib.request.Request('http://127.0.0.1:5000/api/internal/socket-trigger', data=json.dumps({
+                        "type": "vehicle",
+                        "data": { "id": new_check.id, "camera_name": self.camera_name, "plate_number": plate_text, "timestamp": now.isoformat() }
+                    }).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
+                    urllib.request.urlopen(req, timeout=2.0)
+                except: pass
         except Exception as e:
             db.rollback()
-            print(f"VEHICLE DB ERROR: {e}")
+            print(f"DB ERROR: {e}")
         finally:
             db.close()
 
     def validate_indian_plate(self, text):
-        """Strict regex for Indian license plates as provided by the user."""
-        # Formats: KA 02 MN 1826, DL 4C AB 1234, TN 38 N 5489
         pattern = r"^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{4}$"
-        clean_text = text.replace(" ", "")
-        return re.match(pattern, clean_text) is not None
-
-    def correct_plate_format(self, text):
-        """Attempts to fix common OCR misreads in standard formats."""
-        if not text: return None
-        clean = "".join([c for c in text if c.isalnum()]).upper()
-        if len(clean) < 4: return None
-        return clean
+        return re.match(pattern, text.replace(" ", "")) is not None
 
     def close(self):
-        """Explicitly close the database session (No-op after refactor)"""
         pass

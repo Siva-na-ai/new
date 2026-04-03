@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Check, Play, Settings, Trash2, Power, PowerOff, Monitor } from 'lucide-react'
+import { Plus, Check, Play, Settings, Trash2, Power, PowerOff, Monitor, Maximize2, Minimize2, X } from 'lucide-react'
 
 const DETECTION_CLASSES = [
-  "box_open", "box_close", "helmet", "no_helmet", "no_vest", "person_with_vest", "person", "license_plate", "person_not_working", "person_standing", "person_working"
+  "person", "person_working", "person_not_working", "person_standing",
+  "helmet", "no_helmet", "vest", "no_vest",
+  "forklift", "forklift_collision",
+  "vehicle", "covered_vehicle", "uncovered_vehicle",
+  "license_plate",
+  "box_open", "box_close", "box_keeping", "box_throwing"
 ]
+
+import { io } from 'socket.io-client';
 
 const CamerasView = ({ isViewer = false }) => {
   const [cameras, setCameras] = useState([]);
@@ -11,21 +18,67 @@ const CamerasView = ({ isViewer = false }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingCam, setEditingCam] = useState(null);
   const [newCam, setNewCam] = useState({ ip_address: '', place_name: '', detections: [] });
+  const [maximizedCamId, setMaximizedCamId] = useState(null);
   
   const API_BASE = '/api';
   const WORKER_BASE = `http://${window.location.hostname}:8001`;
 
   const fetchCameras = () => {
-    fetch('/api/cameras')
-      .then(res => res.json())
+    const token = localStorage.getItem('vision_token');
+    fetch('/api/cameras', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => {
+        if (res.status === 401 || res.status === 403) {
+            if (onLogout) onLogout();
+            return [];
+        }
+        return res.json();
+      })
       .then(data => {
-        setCameras(data.map(c => ({ ...c, showDetect: true })));
-      });
+        if (Array.isArray(data)) {
+          setCameras(data.map(c => ({ ...c, showDetect: true })));
+        } else {
+          setCameras([]);
+        }
+      })
+      .catch(() => setCameras([]));
   };
 
   useEffect(() => {
     fetchCameras();
+    
+    let socketRef;
+    import('socket.io-client').then(({ io }) => {
+       socketRef = io();
+       socketRef.on('camera_status', (data) => {
+           setCameras(prev => prev.map(c => c.id === data.id ? { ...c, status: data.status } : c));
+           if (data.status === 'Active') {
+               setTimestamp(Date.now());
+           }
+       });
+    });
+    
+    return () => socketRef && socketRef.disconnect();
   }, []);
+
+  const handleRestart = (id) => {
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/cameras-restart/${id}`, { 
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(() => {
+        setCameras(prev => prev.map(c => c.id === id ? { ...c, status: "Restarting..." } : c));
+        // Staggered retries give the AI worker thread time to re-establish connections 
+        // to remote streams or YouTube processes before mounting the DOM image component.
+        setTimeout(() => setTimestamp(Date.now()), 2000);
+        setTimeout(() => setTimestamp(Date.now()), 4000);
+        setTimeout(() => setTimestamp(Date.now()), 8000);
+        setTimeout(() => setTimestamp(Date.now()), 12000);
+      });
+  };
 
   const [testStatus, setTestStatus] = useState(null); // null, 'loading', 'success', 'error'
 
@@ -52,7 +105,11 @@ const CamerasView = ({ isViewer = false }) => {
       ? `/api/cameras/${editingCam.id}?ip_address=${encodeURIComponent(newCam.ip_address)}&place_name=${encodeURIComponent(newCam.place_name)}&detections=${encodeURIComponent(newCam.detections.join(','))}`
       : `/api/cameras?ip_address=${encodeURIComponent(newCam.ip_address)}&place_name=${encodeURIComponent(newCam.place_name)}&detections=${encodeURIComponent(newCam.detections.join(','))}`;
     
-    fetch(url, { method: isEdit ? 'PUT' : 'POST' })
+    const token = localStorage.getItem('vision_token');
+    fetch(url, { 
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
     .then(res => {
       if (!res.ok) throw new Error(`Server ${res.status}: Failed to commit configuration change.`);
       return res.json();
@@ -71,13 +128,22 @@ const CamerasView = ({ isViewer = false }) => {
     })
     .catch(err => {
       console.error('Update Error:', err);
-      alert('Sync Failure: ' + err.message + '\n\nPlease check the terminal for "Worker Communication Error" details.');
+      const isAuthError = err.message.includes('403') || err.message.includes('401');
+      const msg = isAuthError 
+        ? 'Your session has expired. Please log out and log in again to continue.'
+        : 'Sync Failure: ' + err.message + '\n\nPlease check the terminal for worker communication details.';
+      alert(msg);
+      if (isAuthError && onLogout) onLogout();
     });
   };
 
   const handleDelete = (id) => {
     if (!window.confirm('System Confirmation: Proceed with the permanent removal of this surveillance endpoint from the active registry?')) return;
-    fetch(`/api/cameras/${id}`, { method: 'DELETE' })
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/cameras/${id}`, { 
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(() => {
         setCameras(prev => prev.filter(c => c.id !== id));
@@ -85,7 +151,11 @@ const CamerasView = ({ isViewer = false }) => {
   };
 
   const handleToggle = (id) => {
-    fetch(`/api/cameras-toggle/${id}`, { method: 'POST' })
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/cameras-toggle/${id}`, { 
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(data => {
         setCameras(prev => prev.map(c => c.id === id ? { ...c, is_active: data.is_active } : c));
@@ -187,28 +257,49 @@ const CamerasView = ({ isViewer = false }) => {
                     className="stream-img" 
                     src={`${WORKER_BASE}/video_feed/${cam.id}?detect=${!!cam.showDetect}&t=${timestamp}`} 
                     alt="stream" 
+                    onError={(e) => { e.target.style.display = 'none'; }}
+                    onLoad={(e) => { e.target.style.display = 'block'; }}
                   />
-                  <button 
-                    onClick={() => {
-                      setCameras(prev => prev.map(c => c.id === cam.id ? {...c, showDetect: !c.showDetect} : c));
-                    }}
-                    style={{
-                      position: 'absolute',
-                      top: '10px',
-                      right: '10px',
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      borderRadius: '20px',
-                      background: cam.showDetect ? 'var(--success)' : 'rgba(0,0,0,0.5)',
-                      color: 'white',
-                      border: '1px solid rgba(255,255,255,0.2)',
-                      backdropFilter: 'blur(5px)',
-                      cursor: 'pointer',
-                      zIndex: 10
-                    }}
-                  >
-                    {cam.showDetect ? "Off" : "On"}
-                  </button>
+                  {cam.status === 'Stream Ended' && (
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', zIndex: 11, borderRadius: '8px' }}>
+                        <button onClick={() => handleRestart(cam.id)} style={{ padding: '12px 24px', background: 'var(--primary)', color: 'white', borderRadius: '8px', fontSize: '14px', border: 'none', cursor: 'pointer', display: 'flex', gap: '8px', alignItems: 'center', fontWeight: 'bold' }}>
+                            <Play size={18} fill="currentColor" /> Relaunch Stream
+                        </button>
+                    </div>
+                  )}
+                  <div style={{
+                    position: 'absolute',
+                    top: '10px',
+                    right: '10px',
+                    display: 'flex',
+                    gap: '8px',
+                    zIndex: 10
+                  }}>
+                    <button 
+                      className="icon-btn"
+                      onClick={() => setMaximizedCamId(cam.id)}
+                      title="Maximize"
+                    >
+                      <Maximize2 size={16} />
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setCameras(prev => prev.map(c => c.id === cam.id ? {...c, showDetect: !c.showDetect} : c));
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        borderRadius: '20px',
+                        background: cam.showDetect ? 'var(--success)' : 'rgba(0,0,0,0.5)',
+                        color: 'white',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        backdropFilter: 'blur(5px)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {cam.showDetect ? "Off" : "On"}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div style={{ 
@@ -263,6 +354,35 @@ const CamerasView = ({ isViewer = false }) => {
                 <button type="button" onClick={() => setShowAddModal(false)} style={{ background: 'var(--accent)', flex: 1 }}>Cancel</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Fullscreen Overlay */}
+      {maximizedCamId && cameras.find(c => c.id === maximizedCamId) && (
+        <div className="fullscreen-overlay">
+          <div className="fullscreen-header">
+            <div>
+              <h2 style={{ fontSize: '24px', fontWeight: 800 }}>{cameras.find(c => c.id === maximizedCamId).place_name}</h2>
+              <p style={{ color: 'var(--text-dim)' }}>Immersive Monitoring Mode</p>
+            </div>
+            <button className="icon-btn" style={{ width: '48px', height: '48px' }} onClick={() => setMaximizedCamId(null)}>
+              <Minimize2 size={24} />
+            </button>
+          </div>
+          <div className="fullscreen-stream-container">
+            <img 
+              className="stream-img" 
+              src={`${WORKER_BASE}/video_feed/${maximizedCamId}?detect=true&t=${timestamp}`} 
+              alt="fullscreen stream" 
+              style={{ objectFit: 'contain' }}
+            />
+            <button 
+              className="icon-btn" 
+              style={{ position: 'absolute', top: '24px', right: '24px', width: '48px', height: '48px' }} 
+              onClick={() => setMaximizedCamId(null)}
+            >
+              <X size={24} />
+            </button>
           </div>
         </div>
       )}

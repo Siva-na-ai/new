@@ -2,6 +2,7 @@ import cv2
 import threading
 import time
 import os
+import json
 import numpy as np
 import datetime
 import base64
@@ -12,8 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-import redis
-import json
+# Optimization for IP Webcams: Force TCP and set 5s timeout for FFmpeg
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;5000000"
+
+
+import urllib.request
 try:
     from paddleocr import PaddleOCR
     HAS_PADDLE = True
@@ -37,11 +41,51 @@ app.add_middleware(
 )
 
 # Global State for Worker
-active_cameras = {} # {id: {"thread": thread, "stop": False, "frame": None, "detections": [], "status": "Starting..."}}
+active_cameras: Dict[int, Dict[str, Any]] = {} 
+active_cameras_lock = threading.Lock()
+status_queue: list[dict] = [] # Queue for background status sender
+status_lock = threading.Lock()
+MAX_STATUS_QUEUE = 100
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Global Redis Client
-r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
+def status_sender_thread():
+    """Background thread to send status updates to Node server without blocking camera threads"""
+    while True:
+        try:
+            update = None
+            with status_lock:
+                if status_queue:
+                    update = status_queue.pop(0)
+            
+            if update:
+                req = urllib.request.Request('http://127.0.0.1:5000/api/internal/socket-trigger', 
+                    data=json.dumps(update).encode('utf-8'), 
+                    headers={'Content-Type': 'application/json'}, method='POST')
+                try:
+                    # Very short timeout for the internal trigger
+                    urllib.request.urlopen(req, timeout=0.2)
+                except:
+                    pass # Silently fail if Node is down
+            else:
+                time.sleep(0.1)
+        except Exception:
+            time.sleep(1)
+
+# Start background status sender
+threading.Thread(target=status_sender_thread, daemon=True).start()
+
+def set_camera_status(camera_id, status):
+    """Queue a status update for the background sender"""
+    with active_cameras_lock:
+        cam = active_cameras.get(camera_id)
+        if not cam: return
+        if cam.get("status") == status: return
+        cam["status"] = status
+    
+    with status_lock:
+        if len(status_queue) < MAX_STATUS_QUEUE:
+            status_queue.append({"type": "camera_status", "data": {"id": camera_id, "status": status}})
+
 
 # YouTube URL Cache
 yt_url_cache = {} # {url: {"resolved": url, "expires": timestamp}}
@@ -49,16 +93,27 @@ yt_url_cache = {} # {url: {"resolved": url, "expires": timestamp}}
 # Global AI Engine Instances (Same as before, with Lock)
 ai_lock = threading.Lock()
 # Initialize with automatic device detection (cuda/cpu)
-shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "best_res2.pt"))
+shared_detector = Detector(os.path.join(os.path.dirname(BASE_DIR), "weights", "best_new.pt"))
 shared_reid = ReID()
 shared_global_id = GlobalIDManager()
 # Initialize OCR Engine (PaddleOCR with EasyOCR Fallback)
 if HAS_PADDLE:
     try:
         # Check if CUDA is available for Paddle
-        use_gpu = torch.cuda.is_available()
-        shared_ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=use_gpu, use_mkldnn=not use_gpu)
-        print(f"[OCR] PaddleOCR Initialized (GPU={use_gpu}).")
+        use_gpu = torch.cuda.is_available()        # FIX: Ensure compatible arguments for current PaddleOCR version
+        try:
+            shared_ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=use_gpu)
+            print(f"[OCR] PaddleOCR Initialized (GPU={use_gpu}).")
+        except Exception as e:
+            # Second attempt with minimal legacy arguments
+            try:
+                shared_ocr = PaddleOCR(lang='en', use_gpu=use_gpu)
+                print(f"[OCR] PaddleOCR Initialized (Minimal Mode).")
+            except Exception as e2:
+                print(f"[OCR] PaddleOCR Final Fallback to EasyOCR due to: {e2}")
+                import easyocr
+                shared_ocr = easyocr.Reader(['en'], gpu=use_gpu)
+                HAS_PADDLE = False
     except Exception as e:
         print(f"[OCR] PaddleOCR Init Failed: {e}. Falling back to EasyOCR.")
         import easyocr
@@ -79,6 +134,11 @@ def get_ended_frame():
     cv2.putText(img, "STREAM ENDED", (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     _, buffer = cv2.imencode('.jpg', img)
     return buffer.tobytes()
+
+def get_ended_frame_cv2():
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(img, "STREAM ENDED", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    return img
 
 def get_yt_stream_url(url, force_refresh=False):
     # This worker will handle its own YT resolution with caching
@@ -117,7 +177,11 @@ def camera_thread(camera_id, source):
     pipeline = None
     is_file = not (source.startswith("rtsp") or "youtube.com" in source or "youtu.be" in source or source.startswith("http"))
     
-    while not active_cameras[camera_id].get("stop", False):
+    def check_stop():
+        with active_cameras_lock:
+            return active_cameras.get(camera_id, {}).get("stop", False)
+
+    while not check_stop():
         try:
             # 1. Initialize Pipeline (if not already done)
             if pipeline is None:
@@ -127,60 +191,76 @@ def camera_thread(camera_id, source):
             # 2. Resolve Source (for YouTube)
             actual_source = source
             if "youtube.com" in source or "youtu.be" in source:
-                active_cameras[camera_id]["status"] = "Resolving YT..."
+                set_camera_status(camera_id, "Resolving YT...")
                 actual_source = get_yt_stream_url(source)
                 if not actual_source:
-                    active_cameras[camera_id]["status"] = "YT Resolve Failed"
+                    set_camera_status(camera_id, "YT Resolve Failed")
                     time.sleep(10)
                     continue
 
-            # 3. Connect to Stream
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connecting to: {actual_source[:50]}...")
-            active_cameras[camera_id]["status"] = "Connecting..."
-            cap = cv2.VideoCapture(actual_source)
-            
-            if not cap.isOpened():
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connection Failed.")
-                active_cameras[camera_id]["status"] = "Connection Failed, Retrying..."
-                time.sleep(5)
-                continue
+            # 3. Connect to Stream with exponential backoff for persistent failures
+            retry_count = 0
+            while not check_stop():
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connecting to: {actual_source[:50]}...")
+                set_camera_status(camera_id, "Connecting...")
+                cap = cv2.VideoCapture(actual_source)
+                
+                if cap.isOpened():
+                    break
+                
+                retry_count += 1
+                # Exponential backoff: 5s, 10s, 20s, 40s, max 60s
+                wait_time = min(5 * (2 ** (min(retry_count, 4) - 1)), 60) if retry_count > 0 else 5
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Connection Failed. Retrying in {wait_time}s... (Attempt {retry_count})")
+                set_camera_status(camera_id, f"Conn Failed, Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                
+            if check_stop(): break
 
             print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Success: Connected.")
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             
             # 4. Inner Processing Loop
             failure_count = 0
-            while not active_cameras[camera_id].get("stop", False):
+            while not check_stop():
                 try:
                     ret, frame = cap.read()
                     
                     if not ret:
-                        # Handle stream end
-                        if is_file:
-                            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] File Ended. Restarting...")
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            continue
+                        # Handle stream end or connection loss
+                        # IMMEDIATELY clear the stale frame to prevent "frozen screen"
+                        active_cameras[camera_id]["frame"] = None
+                        
+                        failure_count += 1
+                        # Relaxed termination: Files/YouTube allow 5 fails, IP cams allow 10 in the processing loop
+                        threshold = 5 if (is_file or "youtube" in source or "youtu.be" in source) else 10
+                        
+                        if failure_count >= threshold:
+                            # If it's a file, YouTube, or we've failed too many times, end the stream
+                            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Stream Ended permanently (Failures: {failure_count}).")
+                            with active_cameras_lock:
+                                active_cameras[camera_id]["frame"] = get_ended_frame_cv2()
+                                active_cameras[camera_id]["ended"] = True
+                            set_camera_status(camera_id, "Stream Ended")
+                            break
                         else:
-                            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Stream Ended/Lost.")
+                            # For IP cams, try a quick reconnect by breaking to outer loop
+                            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {camera_id}] Stream Connection Lost. Reconnecting (Attempt {failure_count})...")
+                            set_camera_status(camera_id, "Reconnecting...")
+                            time.sleep(1)
                             break # Break to outer loop for reconnection
                     
                     failure_count = 0 # Reset on success
                     
-                    # Update Shared State
-                    active_cameras[camera_id]["frame"] = frame.copy()
-                    active_cameras[camera_id]["status"] = "Active"
-                    active_cameras[camera_id]["last_heartbeat"] = time.time()
+                    # Update Shared State with Lock
+                    with active_cameras_lock:
+                        active_cameras[camera_id]["frame"] = frame.copy()
+                        active_cameras[camera_id]["last_heartbeat"] = time.time()
+                        f_count = active_cameras[camera_id].get("processed_frames", 0)
+                        active_cameras[camera_id]["processed_frames"] = f_count + 1
                     
-                    f_count = active_cameras[camera_id].get("processed_frames", 0)
-                    active_cameras[camera_id]["processed_frames"] = f_count + 1
+                    set_camera_status(camera_id, "Active")
 
-                    # Push Frame to Redis
-                    try:
-                        _, jpeg_buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                        r.set(f"camera:{camera_id}:frame", jpeg_buf.tobytes())
-                    except:
-                        pass
-                    
                     # AI Inference (Throttle to ~4-5 FPS for processing)
                     if f_count % 6 == 0:
                         if ai_lock.acquire(blocking=False):
@@ -193,19 +273,7 @@ def camera_thread(camera_id, source):
                                 
                                 active_cameras[camera_id]["detections"] = dets
                                 active_cameras[camera_id]["zones"] = zones
-                                
-                                # ATOMIC REDIS UPDATE: Store frame and dets together
-                                try:
-                                    _, jpeg_buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                                    data = {
-                                        "frame": base64.b64encode(jpeg_buf).decode('utf-8'),
-                                        "detections": dets,
-                                        "zones": zones,
-                                        "timestamp": time.time()
-                                    }
-                                    r.set(f"camera:{camera_id}:batch", json.dumps(data))
-                                except Exception as r_err:
-                                    print(f"Redis Broadcast Error: {r_err}")
+
                             except Exception as ai_err:
                                 print(f"[AI ERROR] Cam {camera_id}: {ai_err}")
                             finally:
@@ -222,18 +290,77 @@ def camera_thread(camera_id, source):
             # Cleanup Capture for this attempt
             cap.release()
             
+            if active_cameras[camera_id].get("ended", False):
+                break # Exit the supervisor loop completely
+            
         except Exception as outer_e:
             print(f"[SUPERVISOR ERROR] Cam {camera_id} crashed. Restarting in 5s... Error: {outer_e}")
-            active_cameras[camera_id]["status"] = "Crashed, Restarting..."
+            set_camera_status(camera_id, "Crashed, Restarting...")
             time.sleep(5)
 
     print(f"[SHUTDOWN] Worker Thread for Cam {camera_id} stopped permanently.")
-    active_cameras[camera_id]["status"] = "Stopped"
+    if not active_cameras[camera_id].get("ended", False):
+        set_camera_status(camera_id, "Stopped")
 
 @app.get("/video_feed/{camera_id}")
 async def video_feed(camera_id: int, detect: str = "false"):
     is_detect = detect.lower() == "true"
     import anyio
+    
+    def render_and_encode(frame_data, enable_detect, dets, zones_data):
+        disp = frame_data.copy() if enable_detect else frame_data
+        h, w = disp.shape[:2]
+        
+        if enable_detect:
+            # 1. Draw Zones (with sleeker transparency)
+            for zone_pts in zones_data:
+                if zone_pts and len(zone_pts) > 2:
+                    pts = np.array(zone_pts, np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(disp, [pts], True, (255, 0, 0), 1) # Thin blue line
+                    overlay = disp.copy()
+                    cv2.fillPoly(overlay, [pts], (255, 0, 0))
+                    cv2.addWeighted(overlay, 0.15, disp, 0.85, 0, disp)
+            
+            # 2. Draw Detections
+            for det in dets:
+                if not det.get("visible", True): continue
+                x1, y1, x2, y2 = det["xyxy"]
+                rx1, ry1, rx2, ry2 = int(x1), int(y1), int(x2), int(y2)
+                rx1, rx2 = max(0, min(w, rx1)), max(0, min(w, rx2))
+                ry1, ry2 = max(0, min(h, ry1)), max(0, min(h, ry2))
+                
+                # MODERN COLOR MAP
+                cls = det['class_name'].lower()
+                # Vibrant Neon Palette
+                color = (255, 255, 0) # Cyan for People
+                if any(k in cls for k in ['no_helmet', 'no_vest', 'collision', 'throwing']):
+                    color = (0, 0, 255) # Warning Red
+                elif any(k in cls for k in ['vehicle', 'truck', 'forklift']):
+                    color = (0, 215, 255) # Gold/Amber for Vehicles
+                elif 'license' in cls:
+                    color = (0, 255, 0) # Success Green
+                
+                # SLEEK BOX STYLE (2px default)
+                thick = 2
+                cv2.rectangle(disp, (rx1, ry1), (rx2, ry2), color, thick)
+                
+                # PREMIUM LABEL
+                gid = det.get('global_id', '')
+                label = f"{det['class_name'].upper()} #{gid}" if gid else det['class_name'].upper()
+                
+                font = cv2.FONT_HERSHEY_DUPLEX
+                f_scale = 0.5
+                f_thick = 1
+                (tw, th), _ = cv2.getTextSize(label, font, f_scale, f_thick)
+                
+                # Label positioning (Slightly above or inside)
+                txt_y1 = max(ry1 - 10, th + 10)
+                cv2.rectangle(disp, (rx1, txt_y1 - th - 5), (rx1 + tw + 5, txt_y1 + 5), color, -1)
+                cv2.putText(disp, label, (rx1 + 2, txt_y1), font, f_scale, (0, 0, 0), f_thick)
+        
+        _, buffer = cv2.imencode('.jpg', disp, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+        return buffer.tobytes()
+
     async def gen():
         try:
             while True:
@@ -251,59 +378,11 @@ async def video_feed(camera_id: int, detect: str = "false"):
                         await anyio.sleep(0.1)
                         continue
                     
-                    # Draw detections and zones only if requested
-                    if is_detect:
-                        disp = frame.copy() # Only copy if we are going to modify (draw)
-                        
-                        # 1. Draw Restriction Zones (Polygons)
-                        try:
-                            zones = active_cameras[camera_id].get("zones", [])
-                            for zone_pts in zones:
-                                if zone_pts and len(zone_pts) > 2:
-                                    pts = np.array(zone_pts, np.int32).reshape((-1, 1, 2))
-                                    # Draw outline
-                                    cv2.polylines(disp, [pts], True, (0, 0, 255), 2)
-                                    # Draw semi-transparent fill
-                                    overlay = disp.copy()
-                                    cv2.fillPoly(overlay, [pts], (0, 0, 255))
-                                    cv2.addWeighted(overlay, 0.3, disp, 0.7, 0, disp)
-                        except Exception as e:
-                            print(f"Zone visualization drawing error: {e}")
-                        
-                        # 2. Draw Object Detections
-                        for det in detections:
-                            try:
-                                if not det.get("visible", True):
-                                    continue
-                                    
-                                # Scale coordinates from original frame size to 640x360
-                                # Original size is unknown here but we can infer from detection range if needed,
-                                # however, better to store frame_width/height in Redis or Pipeline.
-                                # Assuming 1280x720 or 1920x1080 as common, but let's calculate scale relative to original.
-                                orig_w = det.get("frame_w", frame.shape[1])
-                                orig_h = det.get("frame_h", frame.shape[0])
-                                
-                                scale_x = disp.shape[1] / orig_w if orig_w > 0 else 1
-                                scale_y = disp.shape[0] / orig_h if orig_h > 0 else 1
-                                
-                                x1, y1, x2, y2 = det["xyxy"]
-                                rx1, ry1 = int(x1 * scale_x), int(y1 * scale_y)
-                                rx2, ry2 = int(x2 * scale_x), int(y2 * scale_y)
-                                
-                                cv2.rectangle(disp, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
-                                gid = det.get('global_id', '')
-                                if det['class_name'] == 'license_plate':
-                                    label = f"{det['class_name']}"
-                                else:
-                                    label = f"{det['class_name']} {gid}"
-                                cv2.putText(disp, label, (rx1, ry1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            except:
-                                continue
-                    else:
-                        disp = frame # Direct reference for normal stream (saves memory)
+                    # Offload massive CPU bottlenecks off the primary asyncio HTTP event loop!
+                    zones = active_cameras[camera_id].get("zones", [])
+                    buffer_bytes = await anyio.to_thread.run_sync(render_and_encode, frame, is_detect, detections, zones)
                     
-                    _, buffer = cv2.imencode('.jpg', disp, [int(cv2.IMWRITE_JPEG_QUALITY), 70]) # Lower quality to save bandwidth
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer_bytes + b'\r\n')
                     await anyio.sleep(0.04) # 25fps cap to save CPU
                 except Exception as e:
                     print(f"[FEED ERROR] Cam {camera_id} loop: {e}")
@@ -316,14 +395,20 @@ async def video_feed(camera_id: int, detect: str = "false"):
 @app.post("/start/{camera_id}")
 def start_worker(camera_id: int, source: str = Body(..., embed=True)):
     if camera_id in active_cameras and not active_cameras[camera_id]["stop"]:
-        # If already running, trigger a configuration reload just in case detections changed
-        if "pipeline" in active_cameras[camera_id] and active_cameras[camera_id]["pipeline"]:
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Triggering RELOAD for already running Cam {camera_id}")
-            active_cameras[camera_id]["pipeline"].reload_config()
-            return {"status": "Already running, reloaded config"}
-        return {"status": "Already running"}
+        # If the stream naturally ended, we allow restarting!
+        if active_cameras[camera_id].get("ended", False):
+            active_cameras[camera_id]["stop"] = True # Ensure old thread dies just in case
+            time.sleep(0.5)
+        else:
+            # If already running, trigger a configuration reload just in case detections changed
+            if "pipeline" in active_cameras[camera_id] and active_cameras[camera_id]["pipeline"]:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Triggering RELOAD for already running Cam {camera_id}")
+                active_cameras[camera_id]["pipeline"].reload_config()
+                return {"status": "Already running, reloaded config"}
+            return {"status": "Already running"}
     
     active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "status": "Starting...", "pipeline": None}
+    set_camera_status(camera_id, "Starting...")
     t = threading.Thread(target=camera_thread, args=(camera_id, source), daemon=True)
     active_cameras[camera_id]["thread"] = t
     t.start()
@@ -346,16 +431,20 @@ def stop_worker(camera_id: int):
 
 @app.get("/status")
 def get_status():
-    """Return the health and synchronization status of the worker"""
+    """Return the health and synchronization status of the worker (Thread-safe)"""
+    with active_cameras_lock:
+        # Create a snapshot to avoid RuntimeError: dictionary changed size during iteration
+        snapshot = dict(active_cameras)
+        
     return {
         "status": "online",
-        "active_cameras": [id for id, cam in active_cameras.items() if not cam.get("stop")],
+        "active_cameras": [id for id, cam in snapshot.items() if not cam.get("stop")],
         "details": {
             id: {
                 "status": cam.get("status", "Unknown"),
                 "frames": cam.get("processed_frames", 0),
                 "last_seen": cam.get("last_heartbeat", 0)
-            } for id, cam in active_cameras.items() if not cam.get("stop")
+            } for id, cam in snapshot.items() if not cam.get("stop")
         }
     }
 

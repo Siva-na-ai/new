@@ -14,8 +14,10 @@ const UploadView = () => {
         const formData = new FormData();
         formData.append('file', file);
 
+        const token = localStorage.getItem('vision_token');
         fetch('/api/upload-video', {
             method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
             body: formData
         })
         .then(res => res.json())
@@ -42,7 +44,11 @@ const UploadView = () => {
         const detections = "person,person_working,forklift";
         const url = `/api/cameras?ip_address=${encodeURIComponent(uploadedFile.path)}&place_name=${encodeURIComponent(placeName)}&detections=${encodeURIComponent(detections)}`;
 
-        fetch(url, { method: 'POST' })
+        const token = localStorage.getItem('vision_token');
+        fetch(url, { 
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+        })
             .then(res => res.json())
             .then(() => {
                 alert(`Success! "${placeName}" is now being analyzed.`);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Youtube, Plus, Play, Trash2, Check, Video, Settings, X } from 'lucide-react'
+import { io } from 'socket.io-client';
 
 const DETECTION_CLASSES = [
   "box_opened", "box_closed", "person", "forklift", "collision", "helmet", "no_helmet", "no_vest", "vest", "license_plate", "truck_covered", "truck_not_covered", "person_not_working", "person_standing", "person_working"
@@ -16,9 +17,13 @@ const YoutubeView = () => {
   
   const API_HOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? '127.0.0.1:8000' : `${window.location.hostname}:8000`;
   const API_BASE = `${window.location.protocol}//${API_HOST}`;
+  const WORKER_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:8001' : `http://${window.location.hostname}:8001`;
 
   const fetchCams = () => {
-    fetch('/api/cameras')
+    const token = localStorage.getItem('vision_token');
+    fetch('/api/cameras', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(data => {
         // Only show YT cams
@@ -29,9 +34,42 @@ const YoutubeView = () => {
 
   useEffect(() => {
     fetchCams();
-    const interval = setInterval(fetchCams, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchCams, 60000);
+    
+    let socketRef;
+    import('socket.io-client').then(({ io }) => {
+       socketRef = io();
+       socketRef.on('camera_status', (data) => {
+           setCams(prev => prev.map(c => c.id === data.id ? { ...c, status: data.status } : c));
+           if (data.status === 'Active') {
+               setTimestamp(Date.now());
+           }
+       });
+    });
+    
+    return () => {
+        clearInterval(interval);
+        if (socketRef) socketRef.disconnect();
+    };
   }, []);
+
+  const handleRestart = (id) => {
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/cameras-restart/${id}`, { 
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(() => {
+        setCams(prev => prev.map(c => c.id === id ? { ...c, status: "Restarting..." } : c));
+        // Staggered retries give the AI worker thread time to re-establish connections 
+        // to remote streams or YouTube processes before mounting the DOM image component.
+        setTimeout(() => setTimestamp(Date.now()), 2000);
+        setTimeout(() => setTimestamp(Date.now()), 4000);
+        setTimeout(() => setTimestamp(Date.now()), 8000);
+        setTimeout(() => setTimestamp(Date.now()), 12000);
+      });
+  };
 
   const handleSaveYoutube = (e) => {
     e.preventDefault();
@@ -42,10 +80,14 @@ const YoutubeView = () => {
 
     const label = placeName || 'YouTube Analysis';
     const url = editingCam 
-      ? `/api/cameras/${editingCam.id}?ip_address=${newUrl}&place_name=${label}&detections=${detections.join(',')}`
-      : `/api/cameras?ip_address=${newUrl}&place_name=${label}&detections=${detections.join(',')}`;
+      ? `/api/cameras/${editingCam.id}?ip_address=${encodeURIComponent(newUrl)}&place_name=${encodeURIComponent(label)}&detections=${encodeURIComponent(detections.join(','))}`
+      : `/api/cameras?ip_address=${encodeURIComponent(newUrl)}&place_name=${encodeURIComponent(label)}&detections=${encodeURIComponent(detections.join(','))}`;
 
-    fetch(url, { method: editingCam ? 'PUT' : 'POST' })
+    const token = localStorage.getItem('vision_token');
+    fetch(url, { 
+      method: editingCam ? 'PUT' : 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
     .then(res => res.json())
     .then(() => {
       fetchCams();
@@ -59,7 +101,11 @@ const YoutubeView = () => {
 
   const handleDelete = (id) => {
     if (!window.confirm('System Confirmation: Terminate real-time analytical processing for this stream?')) return;
-    fetch(`/api/cameras/${id}`, { method: 'DELETE' })
+    const token = localStorage.getItem('vision_token');
+    fetch(`/api/cameras/${id}`, { 
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(() => fetchCams());
   };
@@ -119,8 +165,21 @@ const YoutubeView = () => {
               </div>
             </div>
 
-            <div className="stream-container">
-              <img className="stream-img" src={`${API_BASE}/video_feed/${cam.id}?detect=true&t=${timestamp}`} alt="yt stream" />
+            <div className="stream-container" style={{ position: 'relative' }}>
+              <img 
+                className="stream-img" 
+                src={`${WORKER_BASE}/video_feed/${cam.id}?detect=true&t=${timestamp}`} 
+                alt="yt stream" 
+                onError={(e) => { e.target.style.display = 'none'; }}
+                onLoad={(e) => { e.target.style.display = 'block'; }}
+              />
+              {cam.status === 'Stream Ended' && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', zIndex: 11, borderRadius: '8px' }}>
+                    <button onClick={() => handleRestart(cam.id)} style={{ padding: '12px 24px', background: '#FF0000', color: 'white', borderRadius: '8px', fontSize: '14px', border: 'none', cursor: 'pointer', display: 'flex', gap: '8px', alignItems: 'center', fontWeight: 'bold' }}>
+                        <Play size={18} fill="currentColor" /> Relaunch YouTube
+                    </button>
+                </div>
+              )}
               <div style={{ 
                 position: 'absolute', top: '10px', right: '10px', 
                 background: 'rgba(255,0,0,0.8)', color: 'white', 

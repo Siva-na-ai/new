@@ -16,17 +16,20 @@ class Detector:
         # YOLO track/predict expects class IDs (integers), not names
         class_ids = None
         if classes:
-            # Handle both lists of names and lists of IDs
+            # Handle both lists of names, lists of IDs, and stringified IDs (e.g. '13')
             class_ids = []
             name_to_id = {v: k for k, v in self.classes.items()}
             for c in classes:
                 if isinstance(c, str):
-                    if c in name_to_id:
+                    if c.isdigit(): # Handle stringified IDs like '13'
+                        class_ids.append(int(c))
+                    elif c in name_to_id: # Handle names like 'license_plate'
                         class_ids.append(name_to_id[c])
                 else:
                     class_ids.append(c)
         
-        results = self.model.track(frame, persist=True, device=self.device, classes=class_ids, conf=conf, verbose=False)
+        # INCREASED IOU: Eliminates multi-box fragmentation on large objects like trucks
+        results = self.model.track(frame, persist=True, device=self.device, classes=class_ids, conf=conf, iou=0.45, verbose=False)
         
         detections = []
         if results and results[0].boxes:
@@ -50,5 +53,5 @@ class Detector:
 if __name__ == "__main__":
     # Test with a dummy image or webcam if available
     # For now, just initialize
-    detector = Detector(r"D:\analysis_system\weights\best_res1.pt")
+    detector = Detector(r"d:\analysis_system\weights\best_new.pt")
     print(f"Model loaded with classes: {detector.classes}")
