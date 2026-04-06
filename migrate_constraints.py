@@ -6,7 +6,7 @@ load_dotenv('backend/.env')
 
 def migrate_constraints():
     conn = psycopg2.connect(
-        host="192.168.0.249",
+        host="192.168.0.135",
         port=5432,
         database=os.getenv('DB_NAME') or 'video_analysis',
         user=os.getenv('DB_USER') or 'postgres',

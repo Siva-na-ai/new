@@ -170,8 +170,6 @@ const YoutubeView = () => {
                 className="stream-img" 
                 src={`${WORKER_BASE}/video_feed/${cam.id}?detect=true&t=${timestamp}`} 
                 alt="yt stream" 
-                onError={(e) => { e.target.style.display = 'none'; }}
-                onLoad={(e) => { e.target.style.display = 'block'; }}
               />
               {cam.status === 'Stream Ended' && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', zIndex: 11, borderRadius: '8px' }}>

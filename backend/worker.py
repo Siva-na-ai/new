@@ -177,9 +177,14 @@ def camera_thread(camera_id, source):
     pipeline = None
     is_file = not (source.startswith("rtsp") or "youtube.com" in source or "youtu.be" in source or source.startswith("http"))
     
+    my_session_id = active_cameras.get(camera_id, {}).get("session_id")
+    
     def check_stop():
         with active_cameras_lock:
-            return active_cameras.get(camera_id, {}).get("stop", False)
+            state = active_cameras.get(camera_id)
+            if not state: return True
+            if state.get("session_id") != my_session_id: return True
+            return state.get("stop", False)
 
     while not check_stop():
         try:
@@ -256,6 +261,9 @@ def camera_thread(camera_id, source):
                     with active_cameras_lock:
                         active_cameras[camera_id]["frame"] = frame.copy()
                         active_cameras[camera_id]["last_heartbeat"] = time.time()
+                        # NEW: Capture native resolution for zone scaling
+                        if "native_size" not in active_cameras[camera_id]:
+                             active_cameras[camera_id]["native_size"] = { "w": frame.shape[1], "h": frame.shape[0] }
                         f_count = active_cameras[camera_id].get("processed_frames", 0)
                         active_cameras[camera_id]["processed_frames"] = f_count + 1
                     
@@ -312,10 +320,34 @@ async def video_feed(camera_id: int, detect: str = "false"):
         h, w = disp.shape[:2]
         
         if enable_detect:
-            # 1. Draw Zones (with sleeker transparency)
-            for zone_pts in zones_data:
-                if zone_pts and len(zone_pts) > 2:
-                    pts = np.array(zone_pts, np.int32).reshape((-1, 1, 2))
+            # 1. Draw Zones (with dynamic scaling based on data-stored reference resolution)
+            for zone in zones_data:
+                # Handle both new 'RestrictionZone' objects and old 'polygon_points' lists
+                if hasattr(zone, 'points'):
+                    # New format from modified Pipeline
+                    zp_raw = zone.points
+                    ref_w = getattr(zone, 'ref_w', 640)
+                    ref_h = getattr(zone, 'ref_h', 480)
+                elif isinstance(zone, dict) and 'points' in zone:
+                    # Raw dict format
+                    zp_raw = zone['points']
+                    ref_w = zone.get('width', 640)
+                    ref_h = zone.get('height', 480)
+                else:
+                    # Legacy list format
+                    zp_raw = zone
+                    # Guess resolution for legacy: if points > 640, assume 1280
+                    max_x = max([p[0] for p in zp_raw]) if zp_raw else 0
+                    ref_w = 1280 if max_x > 640 else 640
+                    ref_h = 720 if max_x > 640 else 480
+
+                if zp_raw and len(zp_raw) > 2:
+                    scale_x = w / ref_w
+                    scale_y = h / ref_h
+                    
+                    scaled_pts = [[int(p[0] * scale_x), int(p[1] * scale_y)] for p in zp_raw]
+                    pts = np.array(scaled_pts, np.int32).reshape((-1, 1, 2))
+                    
                     cv2.polylines(disp, [pts], True, (255, 0, 0), 1) # Thin blue line
                     overlay = disp.copy()
                     cv2.fillPoly(overlay, [pts], (255, 0, 0))
@@ -407,7 +439,15 @@ def start_worker(camera_id: int, source: str = Body(..., embed=True)):
                 return {"status": "Already running, reloaded config"}
             return {"status": "Already running"}
     
-    active_cameras[camera_id] = {"stop": False, "frame": None, "detections": [], "status": "Starting...", "pipeline": None}
+    session_id = str(time.time())
+    active_cameras[camera_id] = {
+        "stop": False, 
+        "frame": None, 
+        "detections": [], 
+        "status": "Starting...", 
+        "pipeline": None,
+        "session_id": session_id
+    }
     set_camera_status(camera_id, "Starting...")
     t = threading.Thread(target=camera_thread, args=(camera_id, source), daemon=True)
     active_cameras[camera_id]["thread"] = t

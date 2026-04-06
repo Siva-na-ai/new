@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-DB_HOST = os.getenv("DB_HOST", "192.168.0.249")
+DB_HOST = os.getenv("DB_HOST", "192.168.0.135")
 DB_PORT = os.getenv("DB_PORT", "5432")
 # Use defaults only if not set in .env
 DB_USER = os.getenv("DB_USER") or "postgres"

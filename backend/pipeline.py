@@ -93,12 +93,31 @@ class Pipeline:
                 self.detections_to_run = []
             
             # Refresh zones (only if active)
-            self.zones = db.query(RestrictionZone).filter(
+            raw_zones = db.query(RestrictionZone).filter(
                 RestrictionZone.camera_id == self.camera_id
             ).all()
-            # Deep copy points to avoid session issues
-            for z in self.zones:
-                z.polygon_points = list(z.polygon_points)
+            
+            self.zones = []
+            for rz in raw_zones:
+                zp_raw = rz.polygon_points
+                if isinstance(zp_raw, dict):
+                    # New Format: { "points": [], "width": 1280, "height": 720 }
+                    points = zp_raw.get("points", [])
+                    ref_w = zp_raw.get("width", 640) # Default to 640 for user's latest
+                    ref_h = zp_raw.get("height", 480)
+                else:
+                    # Old Format: [ [x,y], ... ]
+                    points = zp_raw
+                    ref_w = 640 # Heuristic for existing zones based on user logs
+                    ref_h = 480
+                
+                # We store a "normalized" version of the points in self.zones 
+                # so detection is resolution-independent
+                # (We don't modify rz.polygon_points which goes back to DB)
+                rz.points = points
+                rz.ref_w = ref_w
+                rz.ref_h = ref_h
+                self.zones.append(rz)
                 
         except Exception as e:
             print(f"[PIPELINE ERROR] Failed to reload config for Cam {self.camera_id}: {e}")
@@ -109,12 +128,27 @@ class Pipeline:
         """Quick check if bbox is near any restriction zone"""
         if not self.zones: return False
         x1, y1, x2, y2 = xyxy
+        w, h = (x2-x1), (y2-y1)
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        p = Point(cx, cy)
+        
+        # Determine Frame Resolution (from detector metadata or first detection)
+        # Assuming xyxy is in native resolution.
+        # We need to scale native cx/cy to the zone's ref_w/ref_h
+        
         for zone in self.zones:
-            poly = Polygon(zone.polygon_points)
-            if poly.buffer(50).contains(p): # 50px buffer
-                # print(f"[Z-DEBUG] Cam {self.camera_id} Obj near Zone {zone.id}")
+            # Scale coordinates for comparison
+            # Optimization: Pre-scaling the zone polygon in reload_config would be better,
+            # but let's do it here for clarity first.
+            native_w = getattr(self, 'frame_w', 1280) # Fallback to common
+            native_h = getattr(self, 'frame_h', 720)
+            
+            # Simple scaling: point in zone space
+            zx = cx * (zone.ref_w / native_w)
+            zy = cy * (zone.ref_h / native_h)
+            p = Point(zx, zy)
+            
+            poly = Polygon(zone.points)
+            if poly.buffer(20).contains(p): # Buffer in zone-space pixels
                 return True
         return False
 
@@ -241,8 +275,10 @@ class Pipeline:
             }
             now = datetime.datetime.now()
             self.plate_results = {tid: res for tid, res in self.plate_results.items() if not res.get("completed") or (now - res.get("finish_time", now)).total_seconds() < 300}
+        # Set frame info for zone scaling
+        self.frame_h, self.frame_w = frame.shape[:2]
 
-        return detections, [z.polygon_points for z in self.zones]
+        return detections, self.zones
 
 
     def handle_ppe_detection(self, detections, frame):
@@ -347,8 +383,13 @@ class Pipeline:
         now = datetime.datetime.now()
         
         for zone in self.zones:
-            poly = Polygon(zone.polygon_points)
-            if poly.contains(point) or poly.touches(point):
+            # Scale detection point (Native Space) to Zone Space
+            zx = cx * (zone.ref_w / self.frame_w)
+            zy = cy * (zone.ref_h / self.frame_h)
+            point_in_zone = Point(zx, zy)
+            
+            poly = Polygon(zone.points)
+            if poly.contains(point_in_zone) or poly.touches(point_in_zone):
                 # Universal Deduplication: One alert per Global ID per zone per stay (10 min cooldown)
                 gid = detection.get("global_id")
                 # Fallback to track_id if no global_id available

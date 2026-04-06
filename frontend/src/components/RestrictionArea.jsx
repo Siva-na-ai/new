@@ -62,16 +62,24 @@ const RestrictionArea = () => {
     // 1. Draw Existing Zones (Blue)
     if (existingZones && existingZones.length > 0) {
       existingZones.forEach(zone => {
-        const zp = zone.polygon_points;
+        const zp_raw = zone.polygon_points;
+        const zp = Array.isArray(zp_raw) ? zp_raw : (zp_raw?.points || []);
+        const ref_w = zp_raw?.width || imgSize.w;
+        const ref_h = zp_raw?.height || imgSize.h;
+        
         if (zp.length > 2) {
           ctx.beginPath();
           ctx.strokeStyle = '#3b82f6'; // Blue for existing
           ctx.lineWidth = 2;
           ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
           
-          ctx.moveTo(zp[0][0], zp[0][1]);
+          // Scale to current visible canvas size
+          const scale_x = imgSize.w / ref_w; 
+          const scale_y = imgSize.h / ref_h;
+          
+          ctx.moveTo(zp[0][0] * scale_x, zp[0][1] * scale_y);
           zp.forEach((p, i) => {
-            if (i > 0) ctx.lineTo(p[0], p[1]);
+            if (i > 0) ctx.lineTo(p[0] * scale_x, p[1] * scale_y);
           });
           ctx.closePath();
           ctx.stroke();
@@ -118,7 +126,7 @@ const RestrictionArea = () => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify(points)
+      body: JSON.stringify({ points, width: imgSize.w, height: imgSize.h })
     })
     .then(res => res.json())
     .then(() => {
@@ -169,12 +177,13 @@ const RestrictionArea = () => {
               <p>Select a camera from the sidebar to begin defining zones.</p>
             </div>
           ) : (
-            <div className="stream-container" style={{ borderRadius: 0 }}>
+            <div className="stream-container stream-editor" style={{ borderRadius: 0, height: 'auto' }}>
               <img 
                 ref={imgRef}
                 className="stream-img" 
                 src={`http://${window.location.hostname}:8001/video_feed/${selectedCam.id}?detect=false`} 
                 alt="stream" 
+                style={{ display: 'block', width: '100%', height: 'auto' }}
                 onLoad={(e) => setImgSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
               />
               <canvas 

@@ -3,7 +3,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../backend/.env') });
 
 const pool = new Pool({
-  host: process.env.DB_HOST || "192.168.0.249",
+  host: process.env.DB_HOST || "192.168.0.135",
   port: process.env.DB_PORT || 5432,
   user: process.env.DB_USER || "postgres",
   password: process.env.DB_PASSWORD || "password",
