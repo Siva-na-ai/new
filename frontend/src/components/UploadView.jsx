@@ -60,8 +60,8 @@ const UploadView = () => {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '800px', margin: '0 auto' }}>
             <header>
-                <h2 style={{ fontSize: '24px' }}>Video Analysis Upload</h2>
-                <p style={{ color: 'var(--text-dim)' }}>Upload local security footage for deep AI inspection</p>
+                <h2 style={{ fontSize: '24px', fontWeight: 800 }}>Video Analysis Upload</h2>
+                <p className="mega-bold-white">Upload local security footage for deep AI inspection</p>
             </header>
 
             <div className="glass-card" style={{ padding: '40px', textAlign: 'center' }}>
@@ -73,8 +73,8 @@ const UploadView = () => {
                         }}>
                             <Upload size={48} color="var(--primary)" />
                         </div>
-                        <h3 style={{ fontSize: '20px', marginBottom: '8px' }}>Select Surveillance Footage</h3>
-                        <p style={{ color: 'var(--text-dim)', marginBottom: '32px' }}>Supported formats: .mp4, .avi, .mkv (Max 500MB recommended)</p>
+                        <h3 style={{ fontSize: '20px', marginBottom: '8px', fontWeight: 800 }}>Select Surveillance Footage</h3>
+                        <p className="mega-bold-white" style={{ marginBottom: '32px' }}>Supported formats: .mp4, .avi, .mkv (Max 500MB recommended)</p>
                         
                         <input 
                             type="file" 
@@ -88,7 +88,8 @@ const UploadView = () => {
                             className="btn-primary" 
                             style={{ 
                                 cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '12px',
-                                padding: '16px 32px', borderRadius: '12px', background: 'var(--primary)', color: 'white'
+                                padding: '16px 32px', borderRadius: '12px', background: 'var(--primary)', color: 'white',
+                                fontWeight: 800
                             }}
                         >
                             {uploading ? 'Processing Data...' : 'Choose File from Disk'}
@@ -100,12 +101,12 @@ const UploadView = () => {
                             <Film color="var(--success)" />
                             <div style={{ flex: 1 }}>
                                 <div style={{ fontWeight: 700 }}>{uploadedFile.filename}</div>
-                                <div style={{ fontSize: '12px', color: 'var(--text-dim)' }}>File successfully staged on server.</div>
+                                <div className="mega-bold-white" style={{ fontSize: '12px' }}>File successfully staged on server.</div>
                             </div>
                             <Check size={20} color="var(--success)" />
                         </div>
 
-                        <label style={{ fontSize: '13px', marginBottom: '4px', display: 'block' }}>Surveillance Point Name</label>
+                        <label className="mega-bold-white" style={{ fontSize: '13px', marginBottom: '4px', display: 'block' }}>Surveillance Point Name</label>
                         <input 
                             type="text" 
                             value={placeName} 
@@ -127,10 +128,10 @@ const UploadView = () => {
             </div>
 
             <div className="glass-card" style={{ padding: '24px', background: 'rgba(99, 102, 241, 0.05)' }}>
-                <h4 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: 'var(--primary)' }}>
+                <h4 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: 'var(--primary)', fontWeight: 800 }}>
                     <Search size={16} /> Analysis Capabilities
                 </h4>
-                <ul style={{ fontSize: '13px', color: 'var(--text-dim)', paddingLeft: '20px', lineHeight: '1.6' }}>
+                <ul className="mega-bold-white" style={{ fontSize: '13px', paddingLeft: '20px', lineHeight: '1.6' }}>
                     <li>Object Detection: Forklifts, Boxes, Trucks, Helmets, Vests</li>
                     <li>Security: Restricted Zone Violations & Intrusion Detection</li>
                     <li>Global ReID: Identify people across different parts of the video</li>

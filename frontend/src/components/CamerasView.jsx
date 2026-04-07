@@ -193,7 +193,7 @@ const CamerasView = ({ isViewer = false }) => {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '24px' }}>{isViewer ? 'Live Monitoring' : 'Camera Management'}</h2>
-          <p style={{ color: 'var(--text-dim)' }}>{isViewer ? 'Stream detection & analytics' : 'Add and configure video sources'}</p>
+          <p style={{ color: 'var(--text-dim)', fontWeight: 700 }}>{isViewer ? 'Stream detection & analytics' : 'Add and configure video sources'}</p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button onClick={() => setTimestamp(Date.now())} style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-dim)', fontSize: '13px' }}>
@@ -215,7 +215,7 @@ const CamerasView = ({ isViewer = false }) => {
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <h4 style={{ fontSize: '18px' }}>{cam.place_name} {isViewer && '(Normal)'}</h4>
+                    <h4 style={{ fontSize: '18px', fontWeight: 800 }}>{cam.place_name} {isViewer && '(Normal)'}</h4>
                     <span style={{ 
                       fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
                       background: cam.status === 'Active' ? 'rgba(16,185,129,0.1)' : 'rgba(244,63,94,0.1)',
@@ -307,7 +307,7 @@ const CamerasView = ({ isViewer = false }) => {
                   border: '1px dashed rgba(255,255,255,0.1)'
                 }}>
                   <Monitor size={32} opacity={0.3} />
-                  <span style={{ fontSize: '12px' }}>Streaming disabled in Management Mode</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800 }}>Streaming disabled in Management Mode</span>
                 </div>
               )}
             </div>
@@ -361,7 +361,7 @@ const CamerasView = ({ isViewer = false }) => {
           <div className="fullscreen-header">
             <div>
               <h2 style={{ fontSize: '24px', fontWeight: 800 }}>{cameras.find(c => c.id === maximizedCamId).place_name}</h2>
-              <p style={{ color: 'var(--text-dim)' }}>Immersive Monitoring Mode</p>
+              <p style={{ color: 'var(--text-dim)', fontWeight: 700 }}>Immersive Monitoring Mode</p>
             </div>
             <button className="icon-btn" style={{ width: '48px', height: '48px' }} onClick={() => setMaximizedCamId(null)}>
               <Minimize2 size={24} />

@@ -151,7 +151,7 @@ const Dashboard = () => {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Analytical Dashboard</h2>
-          <p style={{ color: 'var(--text-dim)' }}>Real-time intelligence across all surveillance modules</p>
+          <p style={{ color: 'var(--text-dim)', fontWeight: 700 }}>Real-time intelligence across all surveillance modules</p>
         </div>
         <div className="glass-card" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255,255,255,0.05)', minWidth: '220px' }}>
           <div className={isSyncing ? "pulse-blue" : "pulse-green"} style={{ 
@@ -165,15 +165,15 @@ const Dashboard = () => {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px' }}>
         <div className="glass-card" style={{ padding: '20px', textAlign: 'center' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Active Cameras</p>
+          <p style={{ color: 'var(--text-main)', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', opacity: 0.9 }}>Active Cameras</p>
           <h3 style={{ fontSize: '28px', marginTop: '8px' }}>{stats.active_cameras}</h3>
         </div>
-        <div className="glass-card" style={{ padding: '20px', textAlign: 'center', borderLeft: '4px solid var(--accent)' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Restriction Alerts</p>
+        <div className="glass-card" style={{ padding: '20px', textAlign: 'center' }}>
+          <p style={{ color: 'var(--text-main)', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', opacity: 0.9 }}>Restriction Alerts</p>
           <h3 style={{ fontSize: '28px', marginTop: '8px', color: 'var(--accent)' }}>{stats.total_alerts}</h3>
         </div>
-        <div className="glass-card" style={{ padding: '20px', textAlign: 'center', borderLeft: '4px solid var(--primary)' }}>
-          <p style={{ color: 'var(--text-dim)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase' }}>Vehicle Entries</p>
+        <div className="glass-card" style={{ padding: '20px', textAlign: 'center' }}>
+          <p style={{ color: 'var(--text-main)', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', opacity: 0.9 }}>Vehicle Entries</p>
           <h3 style={{ fontSize: '28px', marginTop: '8px', color: 'var(--primary)' }}>{stats.total_vehicles}</h3>
         </div>
       </div>
@@ -185,12 +185,12 @@ const Dashboard = () => {
          </div>
          
          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #ef4444' }}>
-               <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO HELMET</p>
+            <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px' }}>
+               <p style={{ fontSize: '12px', color: 'var(--text-main)', fontWeight: 900, opacity: 0.9 }}>NO HELMET</p>
                <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#ef4444' }}>{ppeStats.no_helmet}</div>
             </div>
-             <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', borderLeft: '4px solid #f97316' }}>
-                <p style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>NO VEST</p>
+             <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px' }}>
+                <p style={{ fontSize: '12px', color: 'var(--text-main)', fontWeight: 900, opacity: 0.9 }}>NO VEST</p>
                 <div style={{ fontSize: '24px', fontWeight: 700, marginTop: '4px', color: '#f97316' }}>{ppeStats.no_vest}</div>
              </div>
          </div>
@@ -198,12 +198,12 @@ const Dashboard = () => {
 
       <div className="dashboard-grid">
         <div className="glass-card">
-          <h3 style={{ marginBottom: '16px' }}>Detection Trends</h3>
+          <h3 style={{ marginBottom: '16px', fontWeight: 800 }}>Detection Trends</h3>
           <Line data={chartData} options={{ responsive: true, plugins: { legend: { position: 'bottom' } } }} />
         </div>
         
         <div className="glass-card">
-          <h3 style={{ marginBottom: '16px' }}>Recent Alerts</h3>
+          <h3 style={{ marginBottom: '16px', fontWeight: 800 }}>Recent Alerts</h3>
           <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
             <table>
               <thead>
@@ -245,7 +245,7 @@ const Dashboard = () => {
         </div>
         
         <div className="glass-card wide-card">
-          <h3 style={{ marginBottom: '16px' }}>Live Vehicle Logs</h3>
+          <h3 style={{ marginBottom: '16px', fontWeight: 800 }}>Live Vehicle Logs</h3>
           <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
             <table>
               <thead>
@@ -316,28 +316,28 @@ const Dashboard = () => {
               
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '12px' }}>
                 <div>
-                  <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px' }}>Camera Source</label>
+                  <label style={{ display: 'block', color: 'var(--text-main)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800, opacity: 0.8 }}>Camera Source</label>
                   <p style={{ fontWeight: 600 }}>{selectedItem.camera_name || 'N/A'}</p>
                 </div>
                 <div>
-                  <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px' }}>Detection Time</label>
+                  <label style={{ display: 'block', color: 'var(--text-main)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800, opacity: 0.8 }}>Detection Time</label>
                   <p style={{ fontWeight: 600 }}>{new Date(selectedItem.timestamp || selectedItem.time_in).toLocaleString()}</p>
                 </div>
                 {modalType === 'alert' && (
                   <div>
-                    <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px' }}>Global ID</label>
+                    <label style={{ display: 'block', color: 'var(--text-main)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800, opacity: 0.8 }}>Global ID</label>
                     <p style={{ fontWeight: 600, color: 'var(--primary)' }}>{selectedItem.global_id || 'untracked'}</p>
                   </div>
                 )}
                 {modalType === 'vehicle' && (
                   <>
                     <div>
-                      <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px' }}>Plate Number</label>
+                      <label style={{ display: 'block', color: 'var(--text-main)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800, opacity: 0.8 }}>Plate Number</label>
                       <p style={{ fontWeight: 900, fontSize: '18px', color: 'var(--success)' }}>{selectedItem.plate_number || 'N/A'}</p>
                     </div>
                     {selectedItem.time_out && (
                       <div style={{ gridColumn: 'span 2' }}>
-                        <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px' }}>Departure Time</label>
+                        <label style={{ display: 'block', color: 'var(--text-main)', fontSize: '11px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800, opacity: 0.8 }}>Departure Time</label>
                         <p style={{ fontWeight: 600 }}>{new Date(selectedItem.time_out).toLocaleString()}</p>
                       </div>
                     )}

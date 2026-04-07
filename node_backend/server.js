@@ -245,6 +245,9 @@ app.post('/api/zones', authenticateToken, async (req, res) => {
       'INSERT INTO restriction_zones (camera_id, polygon_points, activation_time, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
       [camera_id, JSON.stringify(points), actTime, true]
     );
+    // Trigger AI Worker Reload
+    axios.post(`http://127.0.0.1:8001/reload/${camera_id}`).catch(e => {});
+    
     res.json({ status: "success", zone_id: r.rows[0].id });
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -262,7 +265,15 @@ app.get('/api/zones/:camera_id', authenticateToken, async (req, res) => {
 
 app.delete('/api/zones/:id', authenticateToken, async (req, res) => {
   try {
+    const { rows } = await pool.query('SELECT camera_id FROM restriction_zones WHERE id=$1', [req.params.id]);
+    const camId = rows.length > 0 ? rows[0].camera_id : null;
+    
     await pool.query('DELETE FROM restriction_zones WHERE id=$1', [req.params.id]);
+    
+    if (camId) {
+      axios.post(`http://127.0.0.1:8001/reload/${camId}`).catch(e => {});
+    }
+    
     res.json({ status: "Zone deleted" });
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -280,8 +291,26 @@ app.get('/api/alerts', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/vehicles', authenticateToken, async (req, res) => {
+  const { start_date, end_date, search } = req.query;
   try {
-    const { rows } = await pool.query('SELECT * FROM vehicle_checks ORDER BY time_in DESC LIMIT 30');
+    let query = 'SELECT * FROM vehicle_checks WHERE 1=1';
+    let params = [];
+
+    if (start_date) {
+      params.push(new Date(start_date));
+      query += ` AND time_in >= $${params.length}`;
+    }
+    if (end_date) {
+      params.push(new Date(end_date));
+      query += ` AND time_in <= $${params.length}`;
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      query += ` AND (plate_number ILIKE $${params.length} OR camera_name ILIKE $${params.length})`;
+    }
+
+    query += ' ORDER BY time_in DESC LIMIT 50';
+    const { rows } = await pool.query(query, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -304,10 +333,11 @@ app.get('/api/ppe/stats', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/ppe/logs', authenticateToken, async (req, res) => {
-  const { start_date, end_date } = req.query;
+  const { start_date, end_date, search } = req.query;
   try {
     let query = 'SELECT * FROM ppe_violations WHERE 1=1';
     let params = [];
+
     if (start_date) {
       params.push(new Date(start_date));
       query += ` AND timestamp >= $${params.length}`;
@@ -316,6 +346,11 @@ app.get('/api/ppe/logs', authenticateToken, async (req, res) => {
       params.push(new Date(end_date));
       query += ` AND timestamp <= $${params.length}`;
     }
+    if (search) {
+      params.push(`%${search}%`);
+      query += ` AND (camera_name ILIKE $${params.length} OR violation_type ILIKE $${params.length})`;
+    }
+
     query += ' ORDER BY timestamp DESC LIMIT 100';
     const { rows } = await pool.query(query, params);
     res.json(rows);

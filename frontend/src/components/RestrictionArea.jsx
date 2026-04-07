@@ -42,15 +42,23 @@ const RestrictionArea = () => {
 
   const handleCanvasClick = (e) => {
     if (!selectedCam) return;
+    const img = imgRef.current;
+    if (!img) return;
+
     const rect = canvasRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     
-    // Scale to original frame size dynamically
-    const scaleX = imgSize.w / rect.width;
-    const scaleY = imgSize.h / rect.height;
+    // Refresh imgSize from actual image just in case it changed
+    const currentW = img.naturalWidth || 1280;
+    const currentH = img.naturalHeight || 720;
+    setImgSize({ w: currentW, h: currentH });
+
+    // Store points as normalized coordinates (0 to 1)
+    const normX = x / rect.width;
+    const normY = y / rect.height;
     
-    setPoints(prev => [...prev, [Math.round(x * scaleX), Math.round(y * scaleY)]]);
+    setPoints(prev => [...prev, [normX, normY]]);
   };
 
   const drawPolygon = () => {
@@ -73,13 +81,14 @@ const RestrictionArea = () => {
           ctx.lineWidth = 2;
           ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
           
-          // Scale to current visible canvas size
-          const scale_x = imgSize.w / ref_w; 
-          const scale_y = imgSize.h / ref_h;
-          
-          ctx.moveTo(zp[0][0] * scale_x, zp[0][1] * scale_y);
           zp.forEach((p, i) => {
-            if (i > 0) ctx.lineTo(p[0] * scale_x, p[1] * scale_y);
+            // Check if point is normalized (0-1) or absolute pixels (legacy)
+            const isNorm = p[0] <= 1.0 && p[1] <= 1.0;
+            const px = isNorm ? p[0] * imgSize.w : p[0] * scale_x;
+            const py = isNorm ? p[1] * imgSize.h : p[1] * scale_y;
+            
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
           });
           ctx.closePath();
           ctx.stroke();
@@ -96,9 +105,11 @@ const RestrictionArea = () => {
     ctx.lineWidth = 3;
     ctx.fillStyle = 'rgba(244, 63, 94, 0.3)';
     
-    ctx.moveTo(points[0][0], points[0][1]);
     points.forEach((p, i) => {
-      if (i > 0) ctx.lineTo(p[0], p[1]);
+      const px = p[0] * imgSize.w;
+      const py = p[1] * imgSize.h;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
     });
     
     if (points.length > 2) ctx.closePath();
@@ -108,7 +119,7 @@ const RestrictionArea = () => {
     // Draw points
     points.forEach(p => {
        ctx.beginPath();
-       ctx.arc(p[0], p[1], 5, 0, Math.PI * 2);
+       ctx.arc(p[0] * imgSize.w, p[1] * imgSize.h, 5, 0, Math.PI * 2);
        ctx.fillStyle = 'white';
        ctx.fill();
     });
@@ -126,7 +137,7 @@ const RestrictionArea = () => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ points, width: imgSize.w, height: imgSize.h })
+      body: JSON.stringify({ points, type: 'normalized', width: imgSize.w, height: imgSize.h })
     })
     .then(res => res.json())
     .then(() => {
@@ -155,7 +166,7 @@ const RestrictionArea = () => {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
         <div>
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Restriction Zones</h2>
-          <p style={{ color: 'var(--text-dim)' }}>Define exclusion polygons for automated alerts</p>
+          <p className="mega-bold-white">Define exclusion polygons for automated alerts</p>
         </div>
         {points.length > 0 && (
           <div style={{ display: 'flex', gap: '12px' }}>
@@ -172,9 +183,9 @@ const RestrictionArea = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: '32px' }}>
         <div className="glass-card" style={{ padding: '0', overflow: 'hidden' }}>
           {!selectedCam ? (
-            <div style={{ padding: '80px', textAlign: 'center', color: 'var(--text-dim)' }}>
+            <div style={{ padding: '80px', textAlign: 'center', color: 'var(--text-dim)', fontWeight: 700 }}>
               <Monitor size={48} style={{ marginBottom: '16px', opacity: 0.5 }} />
-              <p>Select a camera from the sidebar to begin defining zones.</p>
+              <p className="mega-bold-white" style={{ fontSize: '18px' }}>Select a camera from the sidebar to begin defining zones.</p>
             </div>
           ) : (
             <div className="stream-container stream-editor" style={{ borderRadius: 0, height: 'auto' }}>
@@ -183,7 +194,7 @@ const RestrictionArea = () => {
                 className="stream-img" 
                 src={`http://${window.location.hostname}:8001/video_feed/${selectedCam.id}?detect=false`} 
                 alt="stream" 
-                style={{ display: 'block', width: '100%', height: 'auto' }}
+                style={{ display: 'block', width: '100%', height: 'auto', objectFit: 'contain' }}
                 onLoad={(e) => setImgSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
               />
               <canvas 
@@ -193,8 +204,8 @@ const RestrictionArea = () => {
                 height={imgSize.h}
                 style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor: 'crosshair', pointerEvents: 'auto' }}
               />
-              <div style={{ position: 'absolute', bottom: '20px', left: '20px', background: 'rgba(0,0,0,0.8)', padding: '10px 16px', borderRadius: '12px', fontSize: '13px' }}>
-                <span style={{ color: 'var(--primary)', fontWeight: 800 }}>INSTRUCTIONS:</span> Click on the video to define polygon corners. Points are auto-scaled to original resolution ({imgSize.w}x{imgSize.h}).
+              <div style={{ position: 'absolute', bottom: '20px', left: '20px', background: 'rgba(0,0,0,0.8)', padding: '10px 16px', borderRadius: '12px', fontSize: '13px', fontWeight: 800 }}>
+                <span className="mega-bold-white" style={{ color: 'var(--primary)', marginRight: '8px' }}>INSTRUCTIONS:</span> <span className="mega-bold-white">Click on the video to define polygon corners. Points are auto-scaled to original resolution ({imgSize.w}x{imgSize.h}).</span>
               </div>
             </div>
           )}
@@ -202,7 +213,7 @@ const RestrictionArea = () => {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div className="glass-card">
-            <h4 style={{ marginBottom: '16px', color: 'var(--text-dim)', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Camera Selection</h4>
+            <h4 className="mega-bold-white" style={{ marginBottom: '16px', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Camera Selection</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {cameras.map(cam => (
                 <div 
@@ -211,7 +222,7 @@ const RestrictionArea = () => {
                   className={`nav-item ${selectedCam?.id === cam.id ? 'active' : ''}`}
                   style={{ borderRadius: '12px', background: selectedCam?.id === cam.id ? 'var(--primary-glow)' : 'var(--glass)' }}
                 >
-                  <MapPin size={16} /> {cam.place_name}
+                  <MapPin size={16} /> <span className="mega-bold-white">{cam.place_name}</span>
                 </div>
               ))}
             </div>
@@ -219,9 +230,9 @@ const RestrictionArea = () => {
 
           {selectedCam && (
             <div className="glass-card">
-              <h4 style={{ marginBottom: '16px', color: 'var(--text-dim)', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Activation Settings</h4>
+              <h4 className="mega-bold-white" style={{ marginBottom: '16px', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Activation Settings</h4>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
-                <label style={{ flexShrink: 0 }}>Activation Time (optional):</label>
+                <label className="mega-bold-white" style={{ flexShrink: 0 }}>Activation Time (optional):</label>
                 <input 
                   type="datetime-local" 
                   value={activationTime} 
@@ -230,20 +241,20 @@ const RestrictionArea = () => {
                 />
               </div>
 
-              <h4 style={{ marginBottom: '16px', color: 'var(--text-dim)', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Existing Zones in {selectedCam.place_name}</h4>
+              <h4 className="mega-bold-white" style={{ marginBottom: '16px', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Existing Zones in {selectedCam.place_name}</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {existingZones.map(zone => (
                   <div key={zone.id} className="glass-card" style={{ padding: '12px', background: 'rgba(255,255,255,0.02)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '12px' }}>Zone #{zone.id}</span>
+                      <span style={{ fontSize: '12px', fontWeight: 800 }}>Zone #{zone.id}</span>
                       <button onClick={() => handleDeleteZone(zone.id)} style={{ padding: '4px 8px', background: 'rgba(244,63,94,0.1)', color: 'var(--accent)', fontSize: '10px' }}>Remove</button>
                     </div>
-                    <p style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
+                    <p className="mega-bold-white" style={{ fontSize: '10px', marginTop: '4px' }}>
                       {zone.activation_time ? `Starts: ${new Date(zone.activation_time).toLocaleString()}` : 'Always Active'}
                     </p>
                   </div>
                 ))}
-                {existingZones.length === 0 && <p style={{ fontSize: '12px', color: 'var(--text-dim)', fontStyle: 'italic' }}>No zones defined yet</p>}
+                {existingZones.length === 0 && <p style={{ fontSize: '12px', color: 'var(--text-dim)', fontStyle: 'italic', fontWeight: 700 }}>No zones defined yet</p>}
               </div>
             </div>
           )}

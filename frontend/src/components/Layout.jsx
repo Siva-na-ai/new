@@ -219,7 +219,7 @@ const Layout = ({ loggedUser, onLogout }) => {
                 <AlertTriangle size={48} color="#f43f5e" className="pulse-red" style={{ borderRadius: '50%' }} />
               </div>
               <h2 style={{ color: '#f43f5e', fontSize: '28px', fontWeight: 800, textTransform: 'uppercase' }}>Security Breach</h2>
-              <p style={{ color: '#94a3b8', marginTop: '8px' }}>Restricted area violation detected!</p>
+              <p style={{ color: '#94a3b8', marginTop: '8px', fontWeight: 700 }}>Restricted area violation detected!</p>
             </div>
 
             <div style={{ background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '12px', marginBottom: '32px', textAlign: 'left' }}>
@@ -237,9 +237,9 @@ const Layout = ({ loggedUser, onLogout }) => {
             </button>
             <button 
               onClick={() => { dismissAlarm(); navigate('/dashboard'); }}
-              style={{ width: '100%', height: '48px', background: 'transparent', color: '#94a3b8', border: 'none', marginTop: '12px', cursor: 'pointer', fontSize: '14px' }}
+              style={{ width: '100%', height: '48px', background: 'transparent', color: '#94a3b8', border: 'none', marginTop: '12px', cursor: 'pointer', fontSize: '14px', fontWeight: 700 }}
             >
-              View Full Report
+              View Full Report - Analysis History
             </button>
           </div>
         </div>
@@ -248,33 +248,33 @@ const Layout = ({ loggedUser, onLogout }) => {
       <div className="sidebar">
         <div className="logo">
           <Activity size={28} color="#6366f1" />
-          <span>V-SHIELD AI</span>
+          <span className="mega-bold-white">V-SHIELD AI</span>
         </div>
         
         <div className="nav-group">
           <NavLink to="/dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <LayoutDashboard size={20} /> <span>Dashboard</span>
+            <LayoutDashboard size={20} /> <span className="mega-bold-white">Dashboard</span>
           </NavLink>
           <NavLink to="/cameras" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Camera size={20} /> <span>Manage Cams</span>
+            <Camera size={20} /> <span className="mega-bold-white">Manage Cams</span>
           </NavLink>
           <NavLink to="/viewer" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Search size={20} /> <span>Live Viewer</span>
+            <Search size={20} /> <span className="mega-bold-white">Live Viewer</span>
           </NavLink>
           <NavLink to="/zones" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <ShieldAlert size={20} /> <span>Restriction Area</span>
+            <ShieldAlert size={20} /> <span className="mega-bold-white">Restriction Area</span>
           </NavLink>
           <NavLink to="/youtube" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Youtube size={20} /> <span>YouTube Monitoring</span>
+            <Youtube size={20} /> <span className="mega-bold-white">YouTube Monitoring</span>
           </NavLink>
           <NavLink to="/upload" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Upload size={20} /> <span>Upload Video</span>
+            <Upload size={20} /> <span className="mega-bold-white">Upload Video</span>
           </NavLink>
           <NavLink to="/logs" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <History size={20} /> <span>Entry Logs</span>
+            <History size={20} /> <span className="mega-bold-white">Entry Logs</span>
           </NavLink>
           <NavLink to="/ppe" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <UserCheck size={20} /> <span>PPE Monitoring</span>
+            <UserCheck size={20} /> <span className="mega-bold-white">PPE Monitoring</span>
           </NavLink>
           
           {/* Test Alarm / Unlock Button */}
@@ -297,7 +297,7 @@ const Layout = ({ loggedUser, onLogout }) => {
 
         <div style={{ marginTop: 'auto' }}>
           <div className="nav-item" onClick={onLogout} style={{ cursor: 'pointer' }}>
-            <LogOut size={20} /> <span>Logout ({loggedUser})</span>
+            <LogOut size={20} /> <span className="mega-bold-white">Logout ({loggedUser})</span>
           </div>
         </div>
       </div>

@@ -4,6 +4,8 @@ import { Search, Download, Calendar } from 'lucide-react'
 const EntryLogs = () => {
   const [logs, setLogs] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [lastSync, setLastSync] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -11,7 +13,12 @@ const EntryLogs = () => {
     setIsSyncing(true);
     const t = Date.now();
     const token = localStorage.getItem('vision_token');
-    fetch(`/api/vehicles?t=${t}`, {
+    let url = `/api/vehicles?t=${t}`;
+    if (startDate) url += `&start_date=${startDate}`;
+    if (endDate) url += `&end_date=${endDate}`;
+    if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
+
+    fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
@@ -36,7 +43,7 @@ const EntryLogs = () => {
        });
        return () => socket.disconnect();
     });
-  }, []);
+  }, [startDate, endDate, searchTerm]);
 
   const filteredLogs = logs.filter(log => {
     const plate = (log.plate_number || "").toLowerCase();
@@ -50,7 +57,7 @@ const EntryLogs = () => {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Entry Logs</h2>
-          <p style={{ color: 'var(--text-dim)' }}>Comprehensive history of all vehicle movements</p>
+          <p className="mega-bold-white">Comprehensive history of all vehicle movements</p>
         </div>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
           <div className="glass-card" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', fontSize: '11px' }}>
@@ -74,10 +81,25 @@ const EntryLogs = () => {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button style={{ background: 'var(--glass)', color: 'var(--text-dim)' }}>
-            <Calendar size={18} /> Filter Date
-          </button>
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <label style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>START DATE</label>
+            <input 
+              type="datetime-local" 
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              style={{ width: '180px', padding: '6px 10px', marginBottom: 0, fontSize: '13px' }}
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <label style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>END DATE</label>
+            <input 
+              type="datetime-local" 
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              style={{ width: '180px', padding: '6px 10px', marginBottom: 0, fontSize: '13px' }}
+            />
+          </div>
         </div>
       </div>
 
@@ -86,12 +108,12 @@ const EntryLogs = () => {
           <table>
             <thead>
               <tr>
-                <th>Plate Number</th>
-                <th>Detection View</th>
-                <th>Camera Location</th>
-                <th>Entry Time</th>
-                <th>Exit Time</th>
-                <th>Status</th>
+                <th style={{ fontWeight: 800 }}>Plate Number</th>
+                <th style={{ fontWeight: 800 }}>Detection View</th>
+                <th style={{ fontWeight: 800 }}>Camera Location</th>
+                <th style={{ fontWeight: 800 }}>Entry Time</th>
+                <th style={{ fontWeight: 800 }}>Exit Time</th>
+                <th style={{ fontWeight: 800 }}>Status</th>
               </tr>
             </thead>
             <tbody>
@@ -124,14 +146,14 @@ const EntryLogs = () => {
                         }}
                       />
                     ) : (
-                      <div style={{ width: '120px', height: '60px', background: 'var(--glass)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: 'var(--text-dim)' }}>
+                      <div className="mega-bold-white" style={{ width: '120px', height: '60px', background: 'var(--glass)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>
                         NO IMAGE
                       </div>
                     )}
                   </td>
                   <td style={{ fontWeight: 600 }}>{log.camera_name || 'N/A'}</td>
-                  <td>{log.time_in ? new Date(log.time_in).toLocaleString() : '---'}</td>
-                  <td>{log.time_out ? new Date(log.time_out).toLocaleString() : '---'}</td>
+                  <td style={{ fontWeight: 700 }}>{log.time_in ? new Date(log.time_in).toLocaleString() : '---'}</td>
+                  <td style={{ fontWeight: 700 }}>{log.time_out ? new Date(log.time_out).toLocaleString() : '---'}</td>
                   <td>
                     <span style={{ 
                       padding: '4px 10px', 
@@ -151,7 +173,7 @@ const EntryLogs = () => {
           </table>
         </div>
         {filteredLogs.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-dim)' }}>
+          <div className="mega-bold-white" style={{ textAlign: 'center', padding: '40px' }}>
             No logs found matching your search.
           </div>
         )}

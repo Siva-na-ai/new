@@ -135,7 +135,6 @@ const YoutubeView = () => {
           <h2 style={{ fontSize: '24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Youtube size={32} color="#FF0000" /> YouTube Live Analysis
           </h2>
-          <p style={{ color: 'var(--text-dim)' }}>Analyzing 1 frame every 30 for optimized cloud/social processing</p>
         </div>
         <button onClick={() => { setEditingCam(null); setNewUrl(''); setPlaceName(''); setDetections([2,5,8,9]); setShowAdd(true); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#FF0000' }}>
           <Plus size={18} /> New YT Stream
@@ -147,10 +146,10 @@ const YoutubeView = () => {
           <div key={cam.id} className="glass-card" style={{ padding: '16px', border: '1px solid rgba(255,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
               <div>
-                <h4 style={{ fontSize: '18px' }}>{cam.place_name}</h4>
+                <h4 style={{ fontSize: '18px', fontWeight: 800 }}>{cam.place_name}</h4>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
                   <span className={`status-dot ${cam.status === 'Active' ? 'active' : ''}`}></span>
-                  <span style={{ fontSize: '12px', color: cam.status === 'Active' ? 'var(--success)' : 'var(--accent)' }}>
+                  <span className="mega-bold" style={{ fontSize: '12px', color: cam.status === 'Active' ? 'var(--success)' : 'var(--accent)' }}>
                     {cam.status} (1/30 Skip)
                   </span>
                 </div>
@@ -201,7 +200,9 @@ const YoutubeView = () => {
             </div>
             
             <form onSubmit={handleSaveYoutube}>
-              <label style={{ fontSize: '13px', marginBottom: '4px' }}>YouTube URL</label>
+              <p className="mega-bold-white" style={{ fontSize: '13px', marginBottom: '16px' }}>
+                Enter the YouTube live stream or video URL below.
+              </p>
               <input 
                 type="text" 
                 placeholder="https://www.youtube.com/watch?v=..." 
@@ -210,7 +211,7 @@ const YoutubeView = () => {
                 onChange={e => setNewUrl(e.target.value)} 
               />
               
-              <label style={{ fontSize: '13px', marginBottom: '4px' }}>Dashboard Label (Optional)</label>
+              <label className="mega-bold-white" style={{ fontSize: '13px', marginBottom: '4px' }}>Dashboard Label (Optional)</label>
               <input 
                 type="text" 
                 placeholder="e.g. Traffic Monitor" 
@@ -227,7 +228,7 @@ const YoutubeView = () => {
                   <div key={idx} onClick={() => toggleDetection(idx)} style={{ 
                     padding: '8px', background: detections.includes(idx) ? 'rgba(255,0,0,0.2)' : 'rgba(255,255,255,0.05)',
                     border: detections.includes(idx) ? '1px solid #FF0000' : '1px solid transparent',
-                    borderRadius: '8px', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '8px'
+                    borderRadius: '8px', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700
                   }}>
                     {detections.includes(idx) ? <Check size={12} color="#FF0000" /> : <div style={{width: 12}} />}
                     {cls}

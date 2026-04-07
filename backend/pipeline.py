@@ -114,9 +114,12 @@ class Pipeline:
                 # We store a "normalized" version of the points in self.zones 
                 # so detection is resolution-independent
                 # (We don't modify rz.polygon_points which goes back to DB)
+                # Tag zones for scaling logic
                 rz.points = points
                 rz.ref_w = ref_w
                 rz.ref_h = ref_h
+                # Check for explicit 'normalized' flag from UI
+                rz.is_normalized = (isinstance(zp_raw, dict) and zp_raw.get("type") == "normalized")
                 self.zones.append(rz)
                 
         except Exception as e:
@@ -137,18 +140,21 @@ class Pipeline:
         
         for zone in self.zones:
             # Scale coordinates for comparison
-            # Optimization: Pre-scaling the zone polygon in reload_config would be better,
-            # but let's do it here for clarity first.
-            native_w = getattr(self, 'frame_w', 1280) # Fallback to common
+            native_w = getattr(self, 'frame_w', 1280)
             native_h = getattr(self, 'frame_h', 720)
             
-            # Simple scaling: point in zone space
-            zx = cx * (zone.ref_w / native_w)
-            zy = cy * (zone.ref_h / native_h)
-            p = Point(zx, zy)
-            
-            poly = Polygon(zone.points)
-            if poly.buffer(20).contains(p): # Buffer in zone-space pixels
+            if getattr(zone, 'is_normalized', False):
+                zx = cx / native_w
+                zy = cy / native_h
+                p = Point(zx, zy)
+                poly = Polygon(zone.points)
+            else:
+                zx = cx * (zone.ref_w / native_w)
+                zy = cy * (zone.ref_h / native_h)
+                p = Point(zx, zy)
+                poly = Polygon(zone.points)
+                
+            if poly.buffer(0.02 if getattr(zone, 'is_normalized', False) else 20).contains(p):
                 return True
         return False
 
@@ -374,18 +380,27 @@ class Pipeline:
         if detection["class_name"] not in ["person", "person_working", "person_not_working", "person_standing", "vehicle", "covered_vehicle", "uncovered_vehicle", "forklift", "forklift_collision"]:
             return
             
+        # Set frame info if not already set (fallback for first frame)
+        if not hasattr(self, 'frame_w') or not self.frame_w:
+             self.frame_h, self.frame_w = frame.shape[:2]
+             
         x1, y1, x2, y2 = detection["xyxy"]
         # Use center-bottom point for zone check (more robust for people/vehicles)
         cx = (x1 + x2) // 2
         cy = y2 - 5 # 5 pixels from bottom
-        point = Point(cx, cy)
+        # Don't create Point here, we'll create point_in_zone inside the loop based on scaling
         
         now = datetime.datetime.now()
         
         for zone in self.zones:
             # Scale detection point (Native Space) to Zone Space
-            zx = cx * (zone.ref_w / self.frame_w)
-            zy = cy * (zone.ref_h / self.frame_h)
+            if getattr(zone, 'is_normalized', False):
+                zx = cx / self.frame_w
+                zy = cy / self.frame_h
+            else:
+                zx = cx * (zone.ref_w / self.frame_w)
+                zy = cy * (zone.ref_h / self.frame_h)
+                
             point_in_zone = Point(zx, zy)
             
             poly = Polygon(zone.points)

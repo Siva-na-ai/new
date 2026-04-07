@@ -17,6 +17,7 @@ const PPELogs = () => {
     let url = `/api/ppe/logs?t=${Date.now()}`;
     if (startDate) url += `&start_date=${startDate}`;
     if (endDate) url += `&end_date=${endDate}`;
+    if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
 
     fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
@@ -47,7 +48,7 @@ const PPELogs = () => {
     });
     
     return () => socketRef && socketRef.disconnect();
-  }, [startDate, endDate]);
+  }, [startDate, endDate, searchTerm]);
 
   const exportToExcel = () => {
     const dataToExport = logs.map(log => ({
@@ -68,8 +69,9 @@ const PPELogs = () => {
   const filteredLogs = logs.filter(log => {
     const cam = (log.camera_name || "").toLowerCase();
     const type = (log.violation_type || "").toLowerCase();
+    const gid = (log.global_id || "").toString().toLowerCase();
     const search = searchTerm.toLowerCase();
-    return cam.includes(search) || type.includes(search);
+    return cam.includes(search) || type.includes(search) || gid.includes(search);
   });
 
   return (
@@ -78,16 +80,16 @@ const PPELogs = () => {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '28px', fontWeight: 800 }}>PPE Monitoring</h2>
-          <p style={{ color: 'var(--text-dim)' }}>Safety compliance tracking and violation reports</p>
+          <p className="mega-bold-white">Safety compliance tracking and violation reports</p>
         </div>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
           <div className="glass-card" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', fontSize: '11px' }}>
             <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: isSyncing ? 'var(--primary)' : 'var(--success)', boxShadow: `0 0 10px ${isSyncing ? 'var(--primary)' : 'var(--success)'}` }}></div>
-            <span style={{ fontWeight: 600 }}>{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
+            <span className="mega-bold-white">{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
           </div>
           <button 
             onClick={exportToExcel}
-            style={{ background: 'var(--primary)', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600, cursor: 'pointer' }}
+            style={{ background: 'var(--primary)', border: 'none', color: 'white', padding: '10px 20px', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 800, cursor: 'pointer' }}
           >
             <Download size={18} /> Export Excel
           </button>
@@ -95,36 +97,36 @@ const PPELogs = () => {
       </header>
 
       {/* Filters */}
-      <div className="glass-card" style={{ padding: '24px', display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '20px', alignItems: 'end' }}>
+      <div className="glass-card" style={{ padding: '16px', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '24px', alignItems: 'end' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>SEARCH CAMERA / VIOLATION</label>
+          <label className="mega-bold-white" style={{ fontSize: '12px' }}>SEARCH CAMERA / VIOLATION</label>
           <div style={{ position: 'relative' }}>
-            <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+            <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'white' }} />
             <input 
               type="text" 
               placeholder="e.g. Cam 1, no_helmet..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              style={{ width: '100%', padding: '12px 12px 12px 40px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white' }}
+              style={{ width: '100%', padding: '6px 12px 6px 36px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '10px', color: 'white' }}
             />
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>START DATE</label>
+          <label className="mega-bold-white" style={{ fontSize: '12px' }}>START DATE</label>
           <input 
             type="datetime-local" 
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            style={{ width: '100%', padding: '11px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white' }}
+            style={{ width: '200px', padding: '6px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '10px', color: 'white' }}
           />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>END DATE</label>
+          <label className="mega-bold-white" style={{ fontSize: '12px' }}>END DATE</label>
           <input 
             type="datetime-local" 
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            style={{ width: '100%', padding: '11px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white' }}
+            style={{ width: '200px', padding: '6px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '10px', color: 'white' }}
           />
         </div>
       </div>
@@ -134,11 +136,11 @@ const PPELogs = () => {
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
           <thead>
             <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)' }}>
-              <th style={{ padding: '16px 24px', fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>TIMESTAMP</th>
-              <th style={{ padding: '16px 24px', fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>PHOTO</th>
-              <th style={{ padding: '16px 24px', fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>CAMERA</th>
-              <th style={{ padding: '16px 24px', fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>DETECTED</th>
-              <th style={{ padding: '16px 24px', fontSize: '12px', fontWeight: 700, color: 'var(--text-dim)' }}>GLOBAL ID</th>
+              <th className="mega-bold-white" style={{ padding: '16px 24px', fontSize: '12px' }}>TIMESTAMP</th>
+              <th className="mega-bold-white" style={{ padding: '16px 24px', fontSize: '12px' }}>PHOTO</th>
+              <th className="mega-bold-white" style={{ padding: '16px 24px', fontSize: '12px' }}>CAMERA</th>
+              <th className="mega-bold-white" style={{ padding: '16px 24px', fontSize: '12px' }}>DETECTED</th>
+              <th className="mega-bold-white" style={{ padding: '16px 24px', fontSize: '12px' }}>GLOBAL ID</th>
             </tr>
           </thead>
           <tbody>
@@ -146,7 +148,7 @@ const PPELogs = () => {
               <tr key={log.id} style={{ borderBottom: '1px solid var(--border)', transition: 'background 0.2s' }} className="table-row-hover">
                 <td style={{ padding: '16px 24px' }}>
                   <div style={{ fontWeight: 600 }}>{new Date(log.timestamp).toLocaleTimeString()}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{new Date(log.timestamp).toLocaleDateString()}</div>
+                  <div className="mega-bold-white" style={{ fontSize: '11px' }}>{new Date(log.timestamp).toLocaleDateString()}</div>
                 </td>
                 <td style={{ padding: '16px 24px' }}>
                   {log.image_data ? (
@@ -189,9 +191,9 @@ const PPELogs = () => {
             ))}
             {filteredLogs.length === 0 && (
               <tr>
-                <td colSpan="5" style={{ padding: '48px', textAlign: 'center', color: 'var(--text-dim)' }}>
+                <td colSpan="5" style={{ padding: '48px', textAlign: 'center' }}>
                   <ShieldAlert size={48} style={{ opacity: 0.2, marginBottom: '16px' }} />
-                  <p>No PPE violations found for the selected criteria.</p>
+                  <p className="mega-bold-white">No PPE violations found for the selected criteria.</p>
                 </td>
               </tr>
             )}
