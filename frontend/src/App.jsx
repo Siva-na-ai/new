@@ -9,6 +9,7 @@ import YoutubeView from './components/YoutubeView'
 import EntryLogs from './components/EntryLogs'
 import UploadView from './components/UploadView'
 import PPELogs from './components/PPELogs'
+import { NotificationProvider } from './context/NotificationContext'
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('vision_token'));
@@ -90,23 +91,25 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout loggedUser={loggedUser} onLogout={handleLogout} />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
-          <Route path="/cameras" element={<CamerasView onLogout={handleLogout} />} />
-          <Route path="/viewer" element={<CamerasView isViewer onLogout={handleLogout} />} />
-          <Route path="/zones" element={<RestrictionArea onLogout={handleLogout} />} />
-          <Route path="/youtube" element={<YoutubeView onLogout={handleLogout} />} />
-          <Route path="/upload" element={<UploadView onLogout={handleLogout} />} />
-          <Route path="/logs" element={<EntryLogs onLogout={handleLogout} />} />
-          <Route path="/ppe" element={<PPELogs onLogout={handleLogout} />} />
-        </Route>
-        {/* Redirect unknown routes */}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <NotificationProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout loggedUser={loggedUser} onLogout={handleLogout} />}>
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
+            <Route path="/cameras" element={<CamerasView onLogout={handleLogout} />} />
+            <Route path="/viewer" element={<CamerasView isViewer onLogout={handleLogout} />} />
+            <Route path="/zones" element={<RestrictionArea onLogout={handleLogout} />} />
+            <Route path="/youtube" element={<YoutubeView onLogout={handleLogout} />} />
+            <Route path="/upload" element={<UploadView onLogout={handleLogout} />} />
+            <Route path="/logs" element={<EntryLogs onLogout={handleLogout} />} />
+            <Route path="/ppe" element={<PPELogs onLogout={handleLogout} />} />
+          </Route>
+          {/* Redirect unknown routes */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </NotificationProvider>
   );
 }
 

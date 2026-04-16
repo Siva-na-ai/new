@@ -8,6 +8,15 @@ const pool = new Pool({
   user: process.env.DB_USER || "postgres",
   password: process.env.DB_PASSWORD || "password",
   database: process.env.DB_NAME || "video_analysis",
+  // Resilience settings
+  connectionTimeoutMillis: 5000, 
+  idleTimeoutMillis: 30000,
+  max: 20
+});
+
+// Avoid process crash on unexpected DB errors
+pool.on('error', (err) => {
+  console.error('CRITICAL: Unexpected database pool error', err);
 });
 
 module.exports = pool;

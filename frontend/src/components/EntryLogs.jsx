@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react'
-import { Search, Download, Calendar } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { Search, Download, Filter, Trash2, ChevronDown } from 'lucide-react'
+import { useNotification } from '../context/NotificationContext'
 
 const EntryLogs = () => {
+  const { showNotification } = useNotification();
   const [logs, setLogs] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [lastSync, setLastSync] = useState(null);
@@ -16,7 +18,6 @@ const EntryLogs = () => {
     let url = `/api/vehicles?t=${t}`;
     if (startDate) url += `&start_date=${startDate}`;
     if (endDate) url += `&end_date=${endDate}`;
-    if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
 
     fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
@@ -36,72 +37,166 @@ const EntryLogs = () => {
   useEffect(() => {
     fetchLogs();
     
+    let socket;
     import('socket.io-client').then(({ io }) => {
-       const socket = io();
+       socket = io();
        socket.on('new_vehicle', () => {
           fetchLogs();
        });
-       return () => socket.disconnect();
     });
-  }, [startDate, endDate, searchTerm]);
 
-  const filteredLogs = logs.filter(log => {
-    const plate = (log.plate_number || "").toLowerCase();
-    const camera = (log.camera_name || "").toLowerCase();
-    const search = searchTerm.toLowerCase();
-    return plate.includes(search) || camera.includes(search);
-  });
+    return () => socket && socket.disconnect();
+  }, []); // Only fetch on mount and socket events
+
+  const [selectedPhoto, setSelectedPhoto] = useState(null);
+
+  const handleExport = () => {
+    const token = localStorage.getItem('vision_token');
+    let url = `/api/vehicles/export?`;
+    if (startDate) url += `&start_date=${startDate}`;
+    if (endDate) url += `&end_date=${endDate}`;
+    
+    window.location.href = url + `&token=${token}`;
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2 style={{ fontSize: '28px', fontWeight: 800 }}>Entry Logs</h2>
-          <p className="mega-bold-white">Comprehensive history of all vehicle movements</p>
+          <h2 style={{ fontSize: '32px', fontWeight: 800, letterSpacing: '-0.02em' }}>Entry Logs</h2>
+          <p style={{ color: 'var(--text-dim)', fontWeight: 600, fontSize: '14px', marginTop: '4px' }}>Comprehensive history of all vehicle movements</p>
         </div>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <div className="glass-card" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.05)', fontSize: '11px' }}>
-            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: isSyncing ? 'var(--primary)' : 'var(--success)', boxShadow: `0 0 10px ${isSyncing ? 'var(--primary)' : 'var(--success)'}` }}></div>
-            <span style={{ fontWeight: 600 }}>{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
+          <div className="glass-card" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid var(--border)' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: isSyncing ? 'var(--primary)' : 'var(--success)', boxShadow: `0 0 12px ${isSyncing ? 'var(--primary--glow)' : 'rgba(16,185,129,0.3)'}` }}></div>
+            <span style={{ fontWeight: 800, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>{isSyncing ? 'Syncing...' : `Last Sync: ${lastSync || '---'}`}</span>
           </div>
-          <button style={{ background: 'var(--glass)', border: '1px solid var(--border)', color: 'white' }}>
+          
+          <div style={{ position: 'relative' }}>
+            <button 
+              onClick={() => setShowFilters(!showFilters)}
+              style={{ 
+                background: showFilters ? 'var(--primary)' : 'var(--glass)', 
+                color: showFilters ? 'white' : 'var(--text-main)',
+                border: showFilters ? '1.5px solid var(--primary)' : '1.5px solid var(--border)',
+                padding: '10px 24px',
+                borderRadius: '14px',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                transition: 'all 0.2s',
+                cursor: 'pointer'
+              }}
+            >
+              <Filter size={18} /> 
+              <span>Filters</span>
+              {(startDate || endDate) && <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent)' }} />}
+              <ChevronDown size={14} style={{ transform: showFilters ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+            </button>
+
+            {showFilters && (
+              <>
+                <div 
+                  onClick={() => setShowFilters(false)}
+                  style={{ position: 'fixed', inset: 0, zIndex: 1000 }}
+                />
+                <div 
+                  className="glass-card" 
+                  style={{ 
+                    position: 'absolute', 
+                    top: 'calc(100% + 12px)', 
+                    right: 0, 
+                    zIndex: 1001, 
+                    width: '280px',
+                    padding: '20px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '16px',
+                    boxShadow: '0 30px 60px rgba(0, 0, 0, 0.5)',
+                    border: '1.5px solid var(--border)',
+                    animation: 'modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+                    background: 'var(--bg-card)',
+                    borderRadius: '20px'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h4 style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>Filter Results</h4>
+                    <button 
+                      onClick={() => { setStartDate(''); setEndDate(''); fetchLogs(); setShowFilters(false); showNotification('Filters cleared successfully.', 'success'); }} 
+                      style={{ background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: '11px', fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase' }}
+                    >
+                      RESET
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 800, textTransform: 'uppercase' }}>Start Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      className="light-date-input"
+                      style={{ 
+                        padding: '8px 12px', 
+                        fontSize: '14px', 
+                        borderRadius: '10px', 
+                        background: '#ffffff', 
+                        color: '#000000', 
+                        border: '2px solid transparent',
+                        fontWeight: 600,
+                        width: '100%'
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <label style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 800, textTransform: 'uppercase' }}>End Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className="light-date-input"
+                      style={{ 
+                        padding: '8px 12px', 
+                        fontSize: '14px', 
+                        borderRadius: '10px', 
+                        background: '#ffffff', 
+                        color: '#000000', 
+                        border: '2px solid transparent',
+                        fontWeight: 600,
+                        width: '100%'
+                      }}
+                    />
+                  </div>
+                  
+                  <button 
+                    onClick={() => { fetchLogs(); setShowFilters(false); showNotification('Log filters applied successfully.', 'success'); }}
+                    className="btn-primary"
+                    style={{ width: '100%', padding: '12px', borderRadius: '12px', fontWeight: 800, marginTop: '4px' }}
+                  >
+                    Apply Filters
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <button 
+            onClick={handleExport}
+            style={{ 
+              background: 'var(--primary)', 
+              color: 'white',
+              padding: '10px 24px',
+              fontWeight: 800,
+              borderRadius: '14px',
+              boxShadow: '0 10px 25px var(--primary-glow)',
+              border: '1.5px solid rgba(255,255,255,0.1)'
+            }}
+          >
             <Download size={18} /> Export CSV
           </button>
         </div>
       </header>
-
-      <div className="glass-card" style={{ padding: '16px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-        <div style={{ position: 'relative', flex: 1 }}>
-          <Search size={20} style={{ position: 'absolute', left: '16px', top: '14px', color: 'var(--text-dim)' }} />
-          <input 
-            type="text" 
-            placeholder="Search by Plate Number or Camera..." 
-            style={{ paddingLeft: '48px', marginBottom: 0 }}
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <label style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>START DATE</label>
-            <input 
-              type="datetime-local" 
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              style={{ width: '180px', padding: '6px 10px', marginBottom: 0, fontSize: '13px' }}
-            />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <label style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 800 }}>END DATE</label>
-            <input 
-              type="datetime-local" 
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              style={{ width: '180px', padding: '6px 10px', marginBottom: 0, fontSize: '13px' }}
-            />
-          </div>
-        </div>
-      </div>
 
       <div className="glass-card">
         <div style={{ overflowX: 'auto' }}>
@@ -117,7 +212,7 @@ const EntryLogs = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredLogs.map(log => (
+              {logs.map(log => (
                 <tr key={log.id}>
                   <td>
                     <span style={{ 
@@ -140,10 +235,7 @@ const EntryLogs = () => {
                         width="120" 
                         style={{ borderRadius: '8px', cursor: 'pointer', border: '1px solid var(--border)' }}
                         alt="plate" 
-                        onClick={() => {
-                          const win = window.open();
-                          win.document.write(`<img src="data:image/jpeg;base64,${log.image_data}" style="max-width:100%"/>`);
-                        }}
+                        onClick={() => setSelectedPhoto(log.image_data)}
                       />
                     ) : (
                       <div className="mega-bold-white" style={{ width: '120px', height: '60px', background: 'var(--glass)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px' }}>
@@ -172,12 +264,57 @@ const EntryLogs = () => {
             </tbody>
           </table>
         </div>
-        {filteredLogs.length === 0 && (
-          <div className="mega-bold-white" style={{ textAlign: 'center', padding: '40px' }}>
-            No logs found matching your search.
+        {logs.length === 0 && (
+          <div className="mega-bold-white" style={{ textAlign: 'center', padding: '40px', opacity: 0.5 }}>
+            No logs found for the selected criteria.
           </div>
         )}
       </div>
+
+      {selectedPhoto && (
+        <div className="modal-overlay" onClick={() => setSelectedPhoto(null)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, backdropFilter: 'blur(12px)', animation: 'fadeIn 0.3s ease' }}>
+          <div className="glass-card" onClick={e => e.stopPropagation()} style={{ width: '95%', maxWidth: '900px', maxHeight: '90vh', padding: '16px', position: 'relative', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', overflow: 'hidden', borderRadius: '32px' }}>
+            <button 
+              onClick={() => setSelectedPhoto(null)}
+              style={{ 
+                position: 'absolute', 
+                top: '24px', 
+                right: '24px', 
+                zIndex: 100, 
+                background: 'rgba(244, 63, 94, 0.12)', 
+                border: '1.5px solid rgba(244, 63, 94, 0.3)', 
+                color: '#f43f5e', 
+                width: '40px', 
+                height: '40px', 
+                borderRadius: '12px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                cursor: 'pointer', 
+                transition: 'all 0.2s',
+                padding: '0'
+              }}
+              onMouseOver={e => {
+                e.currentTarget.style.transform = 'scale(1.1)';
+                e.currentTarget.style.background = 'rgba(244, 63, 94, 0.2)';
+              }}
+              onMouseOut={e => {
+                e.currentTarget.style.transform = 'scale(1)';
+                e.currentTarget.style.background = 'rgba(244, 63, 94, 0.12)';
+              }}
+              title="Close"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+            <div style={{ width: '100%', height: 'auto', maxHeight: 'calc(90vh - 32px)', overflow: 'hidden', borderRadius: '20px', background: '#000' }}>
+              <img src={`data:image/jpeg;base64,${selectedPhoto}`} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} alt="Plate Detail" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

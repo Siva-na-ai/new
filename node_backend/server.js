@@ -30,6 +30,11 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/api/media/uploads', express.static(UPLOADS_DIR));
 app.use('/alarm', express.static(ALARM_DIR));
 
+// Health check for frontend resilience
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date() });
+});
+
 // Upload configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
@@ -166,9 +171,12 @@ app.get('/api/cameras', authenticateToken, async (req, res) => {
     const { rows: cameras } = await pool.query('SELECT * FROM cameras ORDER BY id ASC');
     let workerStatusMap = {};
     try {
-      const workerRes = await axios.get('http://127.0.0.1:8001/status');
+      // Increased to 10s to be more resilient under high worker load
+      const workerRes = await axios.get('http://127.0.0.1:8001/status', { timeout: 10000 });
       workerStatusMap = workerRes.data.details || {};
-    } catch(e) {}
+    } catch(e) {
+      console.log("Worker status check timed out or failed. Using database fallback.");
+    }
 
     const result = cameras.map(cam => {
       const info = workerStatusMap[cam.id] || {};
@@ -194,9 +202,9 @@ app.post('/api/cameras-toggle/:id', authenticateToken, async (req, res) => {
     await pool.query('UPDATE cameras SET is_active=$1 WHERE id=$2', [newStatus, req.params.id]);
     
     if (newStatus) {
-      axios.post(`http://127.0.0.1:8001/start/${req.params.id}`, { source: rows[0].ip_address }).catch(e => {});
+      axios.post(`http://127.0.0.1:8001/start/${req.params.id}`, { source: rows[0].ip_address }, { timeout: 3000 }).catch(e => {});
     } else {
-      axios.post(`http://127.0.0.1:8001/stop/${req.params.id}`).catch(e => {});
+      axios.post(`http://127.0.0.1:8001/stop/${req.params.id}`, {}, { timeout: 3000 }).catch(e => {});
     }
     
     res.json({ is_active: newStatus });
@@ -210,24 +218,37 @@ app.post('/api/cameras-restart/:id', authenticateToken, async (req, res) => {
     const { rows } = await pool.query('SELECT ip_address FROM cameras WHERE id=$1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ detail: "Not found" });
     
-    await axios.post(`http://127.0.0.1:8001/start/${req.params.id}`, { source: rows[0].ip_address });
-    res.json({ status: "restarted" });
+    // Async call to worker - don't wait for stream to open before responding
+    axios.post(`http://127.0.0.1:8001/start/${req.params.id}`, { source: rows[0].ip_address }, { timeout: 10000 }).catch(e => {});
+    res.json({ status: "command_queued", message: "Restart command sent to worker" });
   } catch (err) {
     res.status(500).json({ detail: err.message });
   }
 });
 
 app.get('/api/stats', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
+  const { time_range, camera_id } = req.query;
+  const hours = parseInt(time_range) || 24;
+  
   try {
-    const alertsQuery = await pool.query(`SELECT COUNT(*) FROM alerts WHERE DATE(timestamp) = $1`, [today]);
-    const vehiclesQuery = await pool.query(`SELECT COUNT(*) FROM vehicle_checks WHERE DATE(time_in) = $1`, [today]);
-    const camerasQuery = await pool.query('SELECT COUNT(*) FROM cameras WHERE is_active = true');
+    let alertQuery = `SELECT COUNT(*) FROM alerts WHERE timestamp >= NOW() - interval '${hours} hours'`;
+    let vehicleQuery = `SELECT COUNT(*) FROM vehicle_checks WHERE time_in >= NOW() - interval '${hours} hours'`;
+    let params = [];
+
+    if (camera_id && camera_id !== 'all') {
+      params.push(camera_id);
+      alertQuery += ` AND camera_id = $1`;
+      vehicleQuery += ` AND camera_id = $1`;
+    }
+
+    const alertsCount = await pool.query(alertQuery, params);
+    const vehiclesCount = await pool.query(vehicleQuery, params);
+    const activeCams = await pool.query('SELECT COUNT(*) FROM cameras WHERE is_active = true');
     
     res.json({
-      total_alerts: parseInt(alertsQuery.rows[0].count),
-      total_vehicles: parseInt(vehiclesQuery.rows[0].count),
-      active_cameras: parseInt(camerasQuery.rows[0].count)
+      total_alerts: parseInt(alertsCount.rows[0].count),
+      total_vehicles: parseInt(vehiclesCount.rows[0].count),
+      active_cameras: parseInt(activeCams.rows[0].count)
     });
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -246,7 +267,8 @@ app.post('/api/zones', authenticateToken, async (req, res) => {
       [camera_id, JSON.stringify(points), actTime, true]
     );
     // Trigger AI Worker Reload
-    axios.post(`http://127.0.0.1:8001/reload/${camera_id}`).catch(e => {});
+    // Trigger AI Worker Reload Asynchronously
+    axios.post(`http://127.0.0.1:8001/reload/${camera_id}`, {}, { timeout: 10000 }).catch(e => {});
     
     res.json({ status: "success", zone_id: r.rows[0].id });
   } catch (err) {
@@ -282,9 +304,35 @@ app.delete('/api/zones/:id', authenticateToken, async (req, res) => {
 
 // Logs
 app.get('/api/alerts', authenticateToken, async (req, res) => {
+  const { time_range, camera_id } = req.query;
+  const hours = parseInt(time_range) || 24;
+
   try {
-    const { rows } = await pool.query('SELECT * FROM alerts ORDER BY timestamp DESC LIMIT 30');
-    res.json(rows);
+    let intrusionBase = `SELECT * FROM alerts WHERE timestamp >= NOW() - interval '${hours} hours'`;
+    let ppeBase = `SELECT * FROM ppe_violations WHERE timestamp >= NOW() - interval '${hours} hours'`;
+    let params = [];
+
+    if (camera_id && camera_id !== 'all') {
+      params.push(camera_id);
+      intrusionBase += ` AND camera_id = $1`;
+      ppeBase += ` AND camera_id = $1`;
+    }
+
+    const { rows: intrusions } = await pool.query(`${intrusionBase} ORDER BY timestamp DESC LIMIT 1000`, params);
+    const { rows: ppe } = await pool.query(`${ppeBase} ORDER BY timestamp DESC LIMIT 1000`, params);
+    
+    // Transform PPE to match intrusion alert format
+    const transformedPpe = ppe.map(v => ({
+      ...v,
+      class_name: v.violation_type,
+      is_ppe: true
+    }));
+
+    const combined = [...intrusions, ...transformedPpe]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 1000);
+
+    res.json(combined);
   } catch (err) {
     res.status(500).json({ detail: err.message });
   }
@@ -318,12 +366,22 @@ app.get('/api/vehicles', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/ppe/stats', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
+  const { time_range, camera_id } = req.query;
+  const hours = parseInt(time_range) || 24;
+
   try {
     const vTypes = ["helmet", "no_helmet", "person_with_vest", "no_vest"];
     const stats = {};
     for (const vType of vTypes) {
-      const q = await pool.query("SELECT COUNT(*) FROM ppe_violations WHERE violation_type=$1 AND DATE(timestamp)=$2", [vType, today]);
+      let query = `SELECT COUNT(*) FROM ppe_violations WHERE violation_type=$1 AND timestamp >= NOW() - interval '${hours} hours'`;
+      let params = [vType];
+      
+      if (camera_id && camera_id !== 'all') {
+        params.push(camera_id);
+        query += ` AND camera_id = $2`;
+      }
+      
+      const q = await pool.query(query, params);
       stats[vType] = parseInt(q.rows[0].count);
     }
     res.json(stats);

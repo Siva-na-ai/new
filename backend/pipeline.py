@@ -158,26 +158,51 @@ class Pipeline:
                 return True
         return False
 
-    def merge_overlapping_detections(self, detections, iou_threshold=0.6):
-        """Consolidates fragmented boxes (e.g. multi-detects on a single truck)."""
+    def merge_overlapping_detections(self, detections, iou_threshold=0.5):
+        """Consolidates fragmented boxes and resolves multi-class conflicts (e.g. Vehicle vs Truck)."""
         if not detections: return []
+        # Sort by area (largest first) to prioritize parent containers
         sorted_dets = sorted(detections, key=lambda d: (d['xyxy'][2]-d['xyxy'][0])*(d['xyxy'][3]-d['xyxy'][1]), reverse=True)
         merged = []
+        
+        # Specificity ranking: Lower index = more specific
+        SPECIFICITY = ["covered_vehicle", "forklift", "truck", "license_plate", "no_helmet", "no_vest", "helmet", "vest", "person_working", "person_standing"]
+
         for det in sorted_dets:
-            is_fragment = False
+            is_redundant = False
+            d_cls = det['class_name'].lower()
+            
             for parent in merged:
-                if det['class_name'] == parent['class_name'] or (det['class_name'] in ['vehicle','forklift'] and parent['class_name'] in ['vehicle','forklift']):
-                    # Calculate intersection
-                    px1, py1, px2, py2 = parent['xyxy']
-                    dx1, dy1, dx2, dy2 = det['xyxy']
-                    ix1, iy1, ix2, iy2 = max(px1, dx1), max(py1, dy1), min(px2, dx2), min(py2, dy2)
-                    if ix2 > ix1 and iy2 > iy1:
-                        inter_area = (ix2 - ix1) * (iy2 - iy1)
-                        det_area = (dx2 - dx1) * (dy2 - dy1)
-                        if inter_area / det_area > iou_threshold: 
-                            is_fragment = True
-                            break
-            if not is_fragment: merged.append(det)
+                p_cls = parent['class_name'].lower()
+                
+                # Calculate Intersection over Detection Area (IoDA)
+                px1, py1, px2, py2 = parent['xyxy']
+                dx1, dy1, dx2, dy2 = det['xyxy']
+                ix1, iy1, ix2, iy2 = max(px1, dx1), max(py1, dy1), min(px2, dx2), min(py2, dy2)
+                
+                if ix2 > ix1 and iy2 > iy1:
+                    inter_area = (ix2 - ix1) * (iy2 - iy1)
+                    det_area = (dx2 - dx1) * (dy2 - dy1)
+                    # If Current Box is >75% inside Parent, or they share high IOU
+                    if inter_area / det_area > 0.75:
+                        # Match: Resolve which one is more "valuable"
+                        # If the smaller one is more specific (e.g. Helmet inside a Person), we keep both
+                        # But if they are just conflicting types (e.g. Vehicle vs Truck), we pick the best one
+                        is_related = (d_cls in SPECIFICITY and p_cls in SPECIFICITY) or (d_cls in ["vehicle", "truck", "covered_vehicle"] and p_cls in ["vehicle", "truck", "covered_vehicle"])
+                        
+                        if is_related:
+                            # If they are very overlapping, only keep the more specific one
+                            d_idx = SPECIFICITY.index(d_cls) if d_cls in SPECIFICITY else 99
+                            p_idx = SPECIFICITY.index(p_cls) if p_cls in SPECIFICITY else 99
+                            
+                            if d_idx < p_idx: # Current is more specific!
+                                # Swap them if the current one is significantly better
+                                # For simplicity, we just mark redundant if parent is good enough
+                                pass 
+                            else:
+                                is_redundant = True
+                                break
+            if not is_redundant: merged.append(det)
         return merged
 
     def process_frame(self, frame):
@@ -193,6 +218,7 @@ class Pipeline:
         
         # Inject frame dimensions for scaling in renderers
         f_h, f_w = frame.shape[:2]
+        det_res = (f_w, f_h)
         
         # Mark visibility: Only detections explicitly requested by the user should be shown on the feed
         db_requested = []
@@ -202,6 +228,7 @@ class Pipeline:
         for det in detections:
             det["frame_w"] = f_w
             det["frame_h"] = f_h
+            det["det_res"] = det_res
             det["visible"] = (det["class_name"] in db_requested) if db_requested else True
             
             cls_lower = str(det["class_name"]).lower()
@@ -385,44 +412,51 @@ class Pipeline:
              self.frame_h, self.frame_w = frame.shape[:2]
              
         x1, y1, x2, y2 = detection["xyxy"]
-        # Use center-bottom point for zone check (more robust for people/vehicles)
-        cx = (x1 + x2) // 2
-        cy = y2 - 5 # 5 pixels from bottom
-        # Don't create Point here, we'll create point_in_zone inside the loop based on scaling
+        # Robust check: Feet center AND Box center
+        test_points = [
+            ((x1 + x2) // 2, y2 - 5), # Bottom center (Feet)
+            ((x1 + x2) // 2, (y1 + y2) // 2) # True center (Body)
+        ]
         
         now = datetime.datetime.now()
         
         for zone in self.zones:
-            # Scale detection point (Native Space) to Zone Space
-            if getattr(zone, 'is_normalized', False):
-                zx = cx / self.frame_w
-                zy = cy / self.frame_h
-            else:
-                zx = cx * (zone.ref_w / self.frame_w)
-                zy = cy * (zone.ref_h / self.frame_h)
-                
-            point_in_zone = Point(zx, zy)
-            
+            in_zone = False
             poly = Polygon(zone.points)
-            if poly.contains(point_in_zone) or poly.touches(point_in_zone):
-                # Universal Deduplication: One alert per Global ID per zone per stay (10 min cooldown)
-                gid = detection.get("global_id")
-                # Fallback to track_id if no global_id available
-                alert_id = gid if gid else f"T{detection['track_id']}"
-                alert_key = (alert_id, f"zone_{zone.id}")
+            # Add a 10px buffer (or equivalent normalized 0.01) for jitter robustness
+            buffer_size = 0.01 if getattr(zone, 'is_normalized', False) else 10
+            buffered_poly = poly.buffer(buffer_size)
+            
+            for cx, cy in test_points:
+                # Scale detection point (Native Space) to Zone Space
+                if getattr(zone, 'is_normalized', False):
+                    zx = cx / self.frame_w
+                    zy = cy / self.frame_h
+                else:
+                    zx = cx * (zone.ref_w / self.frame_w)
+                    zy = cy * (zone.ref_h / self.frame_h)
+                    
+                point_in_zone = Point(zx, zy)
+                if buffered_poly.contains(point_in_zone) or buffered_poly.touches(point_in_zone):
+                    in_zone = True
+                    break
+            
+            if in_zone:
+                # Stable deduplication: Use track_id primarily to avoid double alerts when Global ID is late
+                # (A track_id is unique per visit in the current session)
+                alert_key = (f"T{detection['track_id']}", f"zone_{zone.id}")
                 
                 can_alert = True
                 if alert_key in self.delivered_alerts:
                     last_time = self.delivered_alerts[alert_key]
-                    if (now - last_time).total_seconds() < 600: # 10 minute cooldown for same person/vehicle
+                    if (now - last_time).total_seconds() < 30: # 30 second cooldown (Improved from 60s)
                         can_alert = False
                 
                 if not can_alert:
-                    # Break is fine here, we only alert once per frame per detection
-                    break
+                    continue # Check other zones or wait for next frame
                 
                 self.delivered_alerts[alert_key] = now
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚨 INTRUSION DETECTED: Cam {self.camera_id}, Zone {zone.id}, Class {detection['class_name']}")
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚨 INTRUSION DETECTED: Cam {self.camera_id}, Zone {zone.id}, Class {detection['class_name']} (Track {detection['track_id']})")
                 
                 # Save alert to DB with fresh session
                 db = SessionLocal()
@@ -458,8 +492,8 @@ class Pipeline:
                     db.commit()
                     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Alert Saved to DB.")
                     
-                    # Trigger Non-Blocking Local Sound Alert
-                    self.play_alarm_sound()
+                    # Trigger Non-Blocking Local Sound Alert (Disabled: already handled by desktop notifier)
+                    # self.play_alarm_sound()
                     
                     # Notify Node.js server via Webhook to broadcast via Socket.io
                     try:
@@ -472,7 +506,7 @@ class Pipeline:
                                 "timestamp": new_alert.timestamp.isoformat()
                             }
                         }).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
-                        urllib.request.urlopen(req, timeout=2.0)
+                        urllib.request.urlopen(req, timeout=10.0) # Increased to 10s for high reliability
                     except Exception as he:
                         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Webhook Notification Error: {he}")
                 except Exception as e:
@@ -594,6 +628,10 @@ class Pipeline:
                 res["finish_time"] = datetime.datetime.now()
 
     def commit_vehicle_to_db(self, plate_text, plate_image):
+        if not plate_text or len(plate_text) > 9:
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] Skipping record: Plate length ({len(plate_text) if plate_text else 0}) > 9 or empty.")
+            return
+
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [CAM {self.camera_id}] [DB ACTION] COMMITTING PLATE: {plate_text}")
         
         # Physical File Save for Dashboard Visibility 

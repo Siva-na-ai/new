@@ -24,6 +24,12 @@ def check_db():
         for zone in zones:
             print(f"ID: {zone.id}, CamID: {zone.camera_id}, Points: {zone.polygon_points}, Active: {zone.is_active}")
             
+        from database import Alert
+        alerts = db.query(Alert).order_by(Alert.id.desc()).limit(5).all()
+        print(f"\nRecent alerts (last 5):")
+        for alert in alerts:
+            print(f"ID: {alert.id}, Cam: {alert.camera_name}, Time: {alert.timestamp}, GID: {alert.global_id}")
+            
         db.close()
     except Exception as e:
         print(f"Error: {e}")

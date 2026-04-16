@@ -269,16 +269,27 @@ def camera_thread(camera_id, source):
                     
                     set_camera_status(camera_id, "Active")
 
-                    # AI Inference (Throttle to ~4-5 FPS for processing)
-                    if f_count % 6 == 0:
+                    # AI Inference (Throttle to ~15 FPS for processing on GPU)
+                    # Every 2 frames = 15 FPS if stream is 30 FPS
+                    if f_count % 2 == 0:
                         if ai_lock.acquire(blocking=False):
                             try:
+                                # Resize for AI if too large to save GPU mem, 
+                                # but Detector already handles it. 
+                                # We just need to ensure the result is stored with the correct frame.
                                 res = pipeline.process_frame(frame)
-                                if isinstance(res, tuple):
-                                    dets, zones = res
-                                else:
-                                    dets, zones = res, []
+                                dets, zones = (res if isinstance(res, tuple) else (res, []))
                                 
+                                # SYNCHRONIZED UPDATE: Store frame + dets + zones together
+                                # This ensures that boxes always match the frame they were detected on
+                                active_cameras[camera_id]["latest_result"] = {
+                                    "frame": frame.copy(),
+                                    "detections": dets,
+                                    "zones": zones,
+                                    "timestamp": time.time()
+                                }
+                                
+                                # Also update global state for non-synced fallback if needed
                                 active_cameras[camera_id]["detections"] = dets
                                 active_cameras[camera_id]["zones"] = zones
 
@@ -288,7 +299,7 @@ def camera_thread(camera_id, source):
                                 ai_lock.release()
                     
                     # Prevent 100% CPU usage
-                    time.sleep(0.005)
+                    time.sleep(0.001)
                     
                 except Exception as inner_e:
                     print(f"[INNER ERROR] Cam {camera_id}: {inner_e}")
@@ -316,39 +327,44 @@ async def video_feed(camera_id: int, detect: str = "false"):
     import anyio
     
     def render_and_encode(frame_data, enable_detect, dets, zones_data):
+        # Resize to standard viewing resolution to save CPU/Network if frame is massive
+        h, w = frame_data.shape[:2]
+        if w > 1280:
+            scale = 1280 / w
+            frame_data = cv2.resize(frame_data, (1280, int(h * scale)))
+            h, w = frame_data.shape[:2]
+            
+            # Scale detections to match the resized viewing frame
+            if enable_detect and dets:
+                for det in dets:
+                    det["xyxy"] = [int(v * scale) for v in det["xyxy"]]
+        
         disp = frame_data.copy() if enable_detect else frame_data
-        h, w = disp.shape[:2]
         
         if enable_detect:
-            # 1. Draw Zones (with dynamic scaling based on data-stored reference resolution)
+            # 1. Draw Zones (with dynamic scaling)
             for zone in zones_data:
-                # Handle both new 'RestrictionZone' objects and old 'polygon_points' lists
+                # Same logic as before but using current w, h
                 if hasattr(zone, 'points'):
-                    # New format from modified Pipeline
                     zp_raw = zone.points
                     ref_w = getattr(zone, 'ref_w', 640)
                     ref_h = getattr(zone, 'ref_h', 480)
                 elif isinstance(zone, dict) and 'points' in zone:
-                    # Raw dict format
                     zp_raw = zone['points']
                     ref_w = zone.get('width', 640)
                     ref_h = zone.get('height', 480)
                 else:
-                    # Legacy list format
                     zp_raw = zone
-                    # Guess resolution for legacy: if points > 640, assume 1280
                     max_x = max([p[0] for p in zp_raw]) if zp_raw else 0
                     ref_w = 1280 if max_x > 640 else 640
                     ref_h = 720 if max_x > 640 else 480
 
                 if zp_raw and len(zp_raw) > 2:
-                    scale_x = w / ref_w
-                    scale_y = h / ref_h
-                    
-                    scaled_pts = [[int(p[0] * scale_x), int(p[1] * scale_y)] for p in zp_raw]
+                    scale_z_x = w / ref_w
+                    scale_z_y = h / ref_h
+                    scaled_pts = [[int(p[0] * scale_z_x), int(p[1] * scale_z_y)] for p in zp_raw]
                     pts = np.array(scaled_pts, np.int32).reshape((-1, 1, 2))
-                    
-                    cv2.polylines(disp, [pts], True, (255, 0, 0), 1) # Thin blue line
+                    cv2.polylines(disp, [pts], True, (255, 0, 0), 1)
                     overlay = disp.copy()
                     cv2.fillPoly(overlay, [pts], (255, 0, 0))
                     cv2.addWeighted(overlay, 0.15, disp, 0.85, 0, disp)
@@ -358,39 +374,26 @@ async def video_feed(camera_id: int, detect: str = "false"):
                 if not det.get("visible", True): continue
                 x1, y1, x2, y2 = det["xyxy"]
                 rx1, ry1, rx2, ry2 = int(x1), int(y1), int(x2), int(y2)
-                rx1, rx2 = max(0, min(w, rx1)), max(0, min(w, rx2))
-                ry1, ry2 = max(0, min(h, ry1)), max(0, min(h, ry2))
                 
-                # MODERN COLOR MAP
                 cls = det['class_name'].lower()
-                # Vibrant Neon Palette
-                color = (255, 255, 0) # Cyan for People
+                color = (255, 255, 0)
                 if any(k in cls for k in ['no_helmet', 'no_vest', 'collision', 'throwing']):
-                    color = (0, 0, 255) # Warning Red
+                    color = (0, 0, 255)
                 elif any(k in cls for k in ['vehicle', 'truck', 'forklift']):
-                    color = (0, 215, 255) # Gold/Amber for Vehicles
+                    color = (0, 215, 255)
                 elif 'license' in cls:
-                    color = (0, 255, 0) # Success Green
+                    color = (0, 255, 0)
                 
-                # SLEEK BOX STYLE (2px default)
-                thick = 2
-                cv2.rectangle(disp, (rx1, ry1), (rx2, ry2), color, thick)
-                
-                # PREMIUM LABEL
+                cv2.rectangle(disp, (rx1, ry1), (rx2, ry2), color, 2)
                 gid = det.get('global_id', '')
                 label = f"{det['class_name'].upper()} #{gid}" if gid else det['class_name'].upper()
-                
                 font = cv2.FONT_HERSHEY_DUPLEX
-                f_scale = 0.5
-                f_thick = 1
-                (tw, th), _ = cv2.getTextSize(label, font, f_scale, f_thick)
-                
-                # Label positioning (Slightly above or inside)
+                (tw, th), _ = cv2.getTextSize(label, font, 0.5, 1)
                 txt_y1 = max(ry1 - 10, th + 10)
                 cv2.rectangle(disp, (rx1, txt_y1 - th - 5), (rx1 + tw + 5, txt_y1 + 5), color, -1)
-                cv2.putText(disp, label, (rx1 + 2, txt_y1), font, f_scale, (0, 0, 0), f_thick)
+                cv2.putText(disp, label, (rx1 + 2, txt_y1), font, 0.5, (0, 0, 0), 1)
         
-        _, buffer = cv2.imencode('.jpg', disp, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+        _, buffer = cv2.imencode('.jpg', disp, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         return buffer.tobytes()
 
     async def gen():
@@ -402,20 +405,28 @@ async def video_feed(camera_id: int, detect: str = "false"):
                         await anyio.sleep(1)
                         continue
                     
-                    frame = active_cameras[camera_id].get("frame")
-                    detections = active_cameras[camera_id].get("detections", [])
+                    # SYNCED FEED: Use the latest complete result (frame + aligned dets)
+                    data = active_cameras[camera_id].get("latest_result")
                     
-                    if frame is None:
-                        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
-                        await anyio.sleep(0.1)
-                        continue
+                    if data is None:
+                        # Fallback to raw frame if AI hasn't processed anything yet
+                        frame = active_cameras[camera_id].get("frame")
+                        if frame is None:
+                            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + get_placeholder_frame() + b'\r\n')
+                            await anyio.sleep(0.1)
+                            continue
+                        detections = []
+                        zones = []
+                    else:
+                        frame = data["frame"]
+                        detections = data["detections"]
+                        zones = data["zones"]
                     
-                    # Offload massive CPU bottlenecks off the primary asyncio HTTP event loop!
-                    zones = active_cameras[camera_id].get("zones", [])
                     buffer_bytes = await anyio.to_thread.run_sync(render_and_encode, frame, is_detect, detections, zones)
                     
                     yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer_bytes + b'\r\n')
-                    await anyio.sleep(0.04) # 25fps cap to save CPU
+                    await anyio.sleep(0.04) # ~25fps target
+
                 except Exception as e:
                     print(f"[FEED ERROR] Cam {camera_id} loop: {e}")
                     await anyio.sleep(0.5)

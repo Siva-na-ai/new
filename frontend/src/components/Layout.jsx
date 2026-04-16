@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck } from 'lucide-react';
+import { LayoutDashboard, Camera, ShieldAlert, LogOut, Search, Youtube, Activity, History, BellRing, AlertTriangle, Upload, UserCheck, Sun, Moon } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 const Layout = ({ loggedUser, onLogout }) => {
@@ -8,6 +8,7 @@ const Layout = ({ loggedUser, onLogout }) => {
   const [latestAlert, setLatestAlert] = useState(null);
   const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
   const [uiLogs, setUiLogs] = useState([]);
+  const [isLightMode, setIsLightMode] = useState(localStorage.getItem('theme') === 'light');
   const lastAlertIdRef = useRef(localStorage.getItem('vision_last_alert_id') ? Number(localStorage.getItem('vision_last_alert_id')) : null);
   const lastVehicleIdRef = useRef(localStorage.getItem('vision_last_vehicle_id') ? Number(localStorage.getItem('vision_last_vehicle_id')) : null);
   const audioRef = useRef(null);
@@ -20,27 +21,41 @@ const Layout = ({ loggedUser, onLogout }) => {
     }
   }, []);
 
+  useEffect(() => {
+    if (isLightMode) {
+      document.documentElement.classList.add('light-theme');
+      localStorage.setItem('theme', 'light');
+    } else {
+      document.documentElement.classList.remove('light-theme');
+      localStorage.setItem('theme', 'dark');
+    }
+  }, [isLightMode]);
+
   const addUiLog = (msg) => {
     const time = new Date().toLocaleTimeString();
     setUiLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 10)); // Increased to 10 for better visibility
     console.log(msg);
   };
 
+  const [isServerDown, setIsServerDown] = useState(false);
+  const lastSoundTimeRef = useRef(0);
+  const audioCtxRef = useRef(null);
+
   const playBeep = () => {
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtxRef.current) return;
+      const audioCtx = audioCtxRef.current;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
-
       oscillator.connect(gainNode);
       gainNode.connect(audioCtx.destination);
-
       oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
       gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
       gainNode.gain.linearRampToValueAtTime(0.5, audioCtx.currentTime + 0.1);
       gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
-
       oscillator.start(audioCtx.currentTime);
       oscillator.stop(audioCtx.currentTime + 0.5);
       addUiLog("🎵 System Beep Triggered.");
@@ -51,24 +66,24 @@ const Layout = ({ loggedUser, onLogout }) => {
 
   const playSiren = () => {
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const audioCtx = audioCtxRef.current;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
       const osc1 = audioCtx.createOscillator();
       const osc2 = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
-
       osc1.connect(gainNode);
       osc2.connect(gainNode);
       gainNode.connect(audioCtx.destination);
-
       osc1.type = 'sawtooth';
       osc2.type = 'square';
       osc1.frequency.setValueAtTime(440, audioCtx.currentTime);
       osc2.frequency.setValueAtTime(443, audioCtx.currentTime);
-      
       gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
       gainNode.gain.linearRampToValueAtTime(0.5, audioCtx.currentTime + 0.1);
       gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 2.0);
-
       osc1.start(); osc2.start();
       osc1.stop(audioCtx.currentTime + 2);
       osc2.stop(audioCtx.currentTime + 2);
@@ -79,16 +94,43 @@ const Layout = ({ loggedUser, onLogout }) => {
   };
 
   useEffect(() => {
-    // Initial connectivity check
+    const checkServerHealth = () => {
+      fetch('/api/health')
+        .then(res => {
+          if (res.ok) {
+            if (isServerDown) {
+               addUiLog("🚀 Connection Restored.");
+               setIsServerDown(false);
+            }
+          } else {
+            setIsServerDown(true);
+          }
+        })
+        .catch(() => {
+          setIsServerDown(true);
+        });
+    };
+
+    checkServerHealth();
+    const healthTimer = setInterval(checkServerHealth, 10000); // Check every 10s
+
     fetch('/api/alarm-sound', { method: 'HEAD' })
       .then(res => {
         if (res.ok) addUiLog("✅ Audio file connection OK.");
         else addUiLog("❌ Audio file 404/Error.");
       })
-      .catch(err => addUiLog("❌ Audio Network Error."));
+      .catch(err => {
+        setIsServerDown(true);
+        addUiLog("❌ Server Unreachable.");
+      });
 
     // Global click listener to satisfy browser autoplay
     const unlockAudio = () => {
+      // Initialize the professional AudioContext on user gesture
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
       if (audioRef.current) {
         audioRef.current.play()
           .then(() => {
@@ -112,7 +154,8 @@ const Layout = ({ loggedUser, onLogout }) => {
         if (res.status === 401 || res.status === 403) onLogout();
         return res.json();
       })
-      .then(data => { if (Array.isArray(data) && data.length > 0) lastAlertIdRef.current = data[0].id; });
+      .then(data => { if (Array.isArray(data) && data.length > 0) lastAlertIdRef.current = data[0].id; })
+      .catch(() => setIsServerDown(true));
 
     fetch('/api/vehicles', {
       headers: { 'Authorization': `Bearer ${token}` }
@@ -124,6 +167,29 @@ const Layout = ({ loggedUser, onLogout }) => {
       .then(data => { if (Array.isArray(data) && data.length > 0) lastVehicleIdRef.current = data[0].id; });
 
     const socket = io();
+
+
+    // Stable Audio Playback Function (Restarts for every alert with cooldown guard)
+    const safePlayAlarm = () => {
+      if (!audioRef.current) return;
+      const now = Date.now();
+      // Prevent sound from "machine-gunning" if multiple frames trigger alerts
+      if (now - lastSoundTimeRef.current < 2000) return;
+      lastSoundTimeRef.current = now;
+
+      // Force restart to the beginning for every alert pulse
+      audioRef.current.currentTime = 0;
+      
+      // TRIGGER SIREN INSTANTLY (Don't wait for mp3)
+      playSiren();
+
+      audioRef.current.play()
+        .catch(e => {
+          if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+             addUiLog(`🔇 Music Play Feedback: ${e.message}`);
+          }
+        });
+    };
 
     socket.on('new_alert', (newest) => {
       const currentId = Number(newest.id);
@@ -144,10 +210,7 @@ const Layout = ({ loggedUser, onLogout }) => {
         lastAlertIdRef.current = currentId;
         localStorage.setItem('vision_last_alert_id', currentId.toString());
         
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification(`🚨 SECURITY ALERT`, { body: `Violation at ${newest.camera_name}`, tag: 'alert-' + newest.id });
-        }
-        if (audioRef.current) audioRef.current.play().then(playSiren).catch(e => addUiLog(`🔇 Audio Play Failed: ${e.message}`));
+        safePlayAlarm();
       } else if (baselineId === null) {
         addUiLog(`✅ Monitoring Alerts (Baseline: ${currentId})`);
         lastAlertIdRef.current = currentId;
@@ -169,10 +232,30 @@ const Layout = ({ loggedUser, onLogout }) => {
       }
     });
 
-    return () => socket.disconnect();
-  }, []);
+    return () => {
+      socket.disconnect();
+      clearInterval(healthTimer);
+    };
+  }, [isServerDown]);
 
   const dismissAlarm = () => {
+    // If audio is still locked, we use this click to unlock it for future alerts
+    if (!isAudioUnlocked && audioRef.current) {
+      audioRef.current.play()
+        .then(() => {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+          setIsAudioUnlocked(true);
+          addUiLog("🛡️ Audio Unlocked via Dismiss Gesture.");
+        })
+        .catch(() => {});
+      
+      // Also try to resume the Web Audio context
+      if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume();
+      }
+    }
+
     setAlarmActive(false);
     if (audioRef.current) {
       audioRef.current.pause();
@@ -202,6 +285,13 @@ const Layout = ({ loggedUser, onLogout }) => {
 
   return (
     <div className="app-container">
+      {/* Connection Loss Banner */}
+      {isServerDown && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999, background: '#f43f5e', color: 'white', padding: '8px', textAlign: 'center', fontSize: '13px', fontWeight: 700, boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>
+          ⚠️ RECONNECTING TO SERVER... (Check your network or server status)
+        </div>
+      )}
+
       {/* Hidden Audio Element */}
       <audio 
         ref={audioRef} 
@@ -231,9 +321,20 @@ const Layout = ({ loggedUser, onLogout }) => {
 
             <button 
               onClick={dismissAlarm}
-              style={{ width: '100%', height: '56px', background: '#f43f5e', color: 'white', borderRadius: '16px', fontSize: '18px', fontWeight: 800, border: 'none', cursor: 'pointer', boxShadow: '0 8px 24px rgba(244, 63, 94, 0.4)' }}
+              style={{ 
+                width: '100%', 
+                height: '56px', 
+                background: isAudioUnlocked ? '#f43f5e' : '#fbbf24', 
+                color: isAudioUnlocked ? 'white' : 'black', 
+                borderRadius: '16px', 
+                fontSize: '16px', 
+                fontWeight: 800, 
+                border: 'none', 
+                cursor: 'pointer', 
+                boxShadow: isAudioUnlocked ? '0 8px 24px rgba(244, 63, 94, 0.4)' : '0 8px 24px rgba(251, 191, 36, 0.4)' 
+              }}
             >
-              DISMISS ALARM
+              {isAudioUnlocked ? 'DISMISS ALARM' : '⚠️ ENABLE ALARM SOUND & DISMISS'}
             </button>
             <button 
               onClick={() => { dismissAlarm(); navigate('/dashboard'); }}
@@ -295,7 +396,7 @@ const Layout = ({ loggedUser, onLogout }) => {
           </div>
         </div>
 
-        <div style={{ marginTop: 'auto' }}>
+        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div className="nav-item" onClick={onLogout} style={{ cursor: 'pointer' }}>
             <LogOut size={20} /> <span className="mega-bold-white">Logout ({loggedUser})</span>
           </div>
@@ -307,19 +408,21 @@ const Layout = ({ loggedUser, onLogout }) => {
           onClick={testAlarm}
           style={{ 
             position: 'fixed', 
-            top: '20px', 
-            right: '20px', 
+            bottom: '32px', 
+            right: '32px', 
             zIndex: 1000, 
             display: 'flex', 
             alignItems: 'center', 
             gap: '12px',
-            background: isAudioUnlocked ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
-            padding: '8px 16px',
-            borderRadius: '12px',
+            background: isAudioUnlocked ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+            padding: '10px 20px',
+            borderRadius: '14px',
             border: `1px solid ${isAudioUnlocked ? '#10b981' : '#f59e0b'}`,
-            backdropFilter: 'blur(8px)',
+            backdropFilter: 'blur(12px)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
             animation: isAudioUnlocked ? 'none' : 'pulse-amber 2s infinite',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            transition: 'all 0.3s ease'
           }}
         >
           {isAudioUnlocked ? <BellRing size={18} color="#10b981" /> : <AlertTriangle size={18} color="#f59e0b" />}

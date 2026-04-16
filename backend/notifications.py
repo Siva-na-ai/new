@@ -17,7 +17,7 @@ class NotificationManager:
         self.smtp_port = 587
         self.sender_email = "sivanarayanam27@gmail.com"
         self.sender_password = "ydqvmfxtrsypyyio" # Removed spaces
-        self.recipient_email = "sanjay@assimilatetechnologies.com" # Assuming same recipient
+        self.recipient_email = "htharwani@assimilatetechnologies.com" # Assuming same recipient
 
         # Twilio Config
         self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "")

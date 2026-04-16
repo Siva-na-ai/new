@@ -81,7 +81,8 @@ def main():
             
             for alert in new_alerts:
                 print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] NEW ALERT: {alert.camera_name} - ID {alert.global_id}")
-                show_toast(f"Security Alert: {alert.camera_name}", f"Detection Found! ID: {alert.global_id}")
+                display_id = alert.global_id if alert.global_id is not None else f"T{alert.track_id}"
+                # show_toast(f"Security Alert: {alert.camera_name}", f"Detection Found! ID: {display_id}") # Disabled per user request
                 # Play audio in background
                 import threading
                 threading.Thread(target=play_system_sound, args=(alarm_sound,), daemon=True).start()

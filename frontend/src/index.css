@@ -5,13 +5,14 @@
   --primary-glow: rgba(99, 102, 241, 0.4);
   --bg-dark: #020617;
   --bg-card: rgba(15, 23, 42, 0.6);
-  --text-main: #f8fafc;
-  --text-dim: #94a3b8;
-  --border: rgba(255, 255, 255, 0.08);
+  --text-main: #ffffff; /* Pure white for maximum brightness */
+  --text-dim: #cbd5e1;  /* Lighter gray for better secondary visibility */
+  --border: rgba(255, 255, 255, 0.12); /* Slightly more visible border */
   --accent: #f43f5e;
   --accent-glow: rgba(244, 63, 94, 0.4);
   --success: #10b981;
   --glass: rgba(255, 255, 255, 0.03);
+  --text-weight: 800;  /* Bold for Dark Mode */
 }
 
 * {
@@ -26,6 +27,7 @@ body {
   font-family: 'Plus Jakarta Sans', sans-serif;
   background-color: var(--bg-dark);
   color: var(--text-main);
+  font-weight: var(--text-weight);
   overflow: hidden;
   background-image: 
     radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
@@ -126,7 +128,7 @@ body {
 
 .grid-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
   gap: 32px;
   width: 100%;
 }
@@ -217,7 +219,6 @@ th {
   text-align: left;
   padding: 12px 16px;
   color: var(--text-main);
-  opacity: 0.9;
   font-size: 13px;
   font-weight: 800;
   text-transform: uppercase;
@@ -259,6 +260,12 @@ input::-webkit-calendar-picker-indicator {
   transition: opacity 0.2s;
 }
 
+/* Fix for calendar icon on light backgrounds */
+.light-date-input::-webkit-calendar-picker-indicator {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
 input::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
 }
@@ -290,6 +297,31 @@ button:active {
   transform: translateY(0);
 }
 
+.btn-primary {
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 15px var(--primary-glow);
+}
+
+.btn-primary:hover {
+  background: #4f46e5 !important;
+  box-shadow: 0 8px 25px var(--primary-glow);
+  transform: translateY(-2px);
+}
+
+.btn-secondary {
+  background: var(--glass) !important;
+  color: var(--text-main) !important;
+  border: 1.5px solid var(--border) !important;
+  box-shadow: none !important;
+}
+
+.btn-secondary:hover {
+  background: rgba(128, 128, 128, 0.1) !important;
+  border-color: var(--text-dim) !important;
+  transform: translateY(-2px);
+}
+
 button[style*='rgba(255,0,0'] {
   background: #f43f5e;
   box-shadow: 0 4px 12px var(--accent-glow);
@@ -317,7 +349,9 @@ button[style*='rgba(255,0,0']:hover {
 .modal-content {
   width: 550px;
   max-width: 95%;
-  animation: modalIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes modalIn {
@@ -428,3 +462,42 @@ button[style*='rgba(255,0,0']:hover {
   color: var(--text-dim);
   font-weight: 800 !important;
 }
+
+/* Light Theme overrides */
+:root.light-theme {
+  --bg-dark: #ffffff;
+  --bg-card: rgba(255, 255, 255, 0.9);
+  --text-main: #0f172a;
+  --text-dim: #1e293b;
+  --border: rgba(0, 0, 0, 0.15);
+  --glass: rgba(0, 0, 0, 0.05);
+  --text-weight: 600;  /* Standard weight for Light Mode */
+}
+
+:root.light-theme body {
+  background-color: #ffffff;
+  background-image: none;
+}
+
+:root.light-theme .sidebar {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+:root.light-theme .mega-bold-white {
+  color: var(--text-main) !important;
+}
+
+:root.light-theme table th {
+  color: var(--text-main);
+}
+
+:root.light-theme table td {
+  background: rgba(0,0,0,0.02);
+}
+
+:root.light-theme input, 
+:root.light-theme select {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-main);
+}
+
