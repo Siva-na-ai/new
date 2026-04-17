@@ -19,6 +19,29 @@ const SECRET_KEY = 'vshield-vision-gate-secure-key-2024'; // In production, use 
 app.use(cors());
 app.use(express.json());
 
+const missingRelationError = (err) => (
+  err &&
+  (err.code === '42P01' || err.code === 'SQLITE_ERROR' || String(err.message || '').toLowerCase().includes('no such table'))
+);
+
+const safeRows = async (query, params = [], fallback = []) => {
+  try {
+    const result = await pool.query(query, params);
+    return result.rows;
+  } catch (err) {
+    if (missingRelationError(err)) {
+      console.warn(`Missing relation for query: ${query}`);
+      return fallback;
+    }
+    throw err;
+  }
+};
+
+const safeCount = async (query, params = [], fallback = 0) => {
+  const rows = await safeRows(query, params, [{ count: String(fallback) }]);
+  return parseInt(rows[0]?.count || fallback, 10);
+};
+
 // Directories
 const BASE_DIR = path.resolve(__dirname, '../backend');
 const ALARM_DIR = path.resolve(__dirname, '../alarm');
@@ -91,7 +114,7 @@ app.post('/api/upload-video', authenticateToken, upload.single('file'), (req, re
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   try {
-    const result = await pool.query('SELECT * FROM users WHERE username ILIKE $1', [username]);
+    const result = await pool.query('SELECT * FROM users WHERE username LIKE ?', [username]);
     if (result.rows.length > 0) {
       const user = result.rows[0];
       const isMatch = await bcrypt.compare(password, user.password);
@@ -123,10 +146,12 @@ app.post('/api/cameras', authenticateToken, async (req, res) => {
   
   try {
     const r = await pool.query(
-      'INSERT INTO cameras (ip_address, place_name, detections_to_run, is_active) VALUES ($1, $2, $3, $4) RETURNING *',
+      'INSERT INTO cameras (ip_address, place_name, detections_to_run, is_active) VALUES (?, ?, ?, ?)',
       [ip_address, place_name, JSON.stringify(detList), true]
     );
-    const cam = r.rows[0];
+    const camId = r.lastInsertRowid;
+    const r2 = await pool.query('SELECT * FROM cameras WHERE id = ?', [camId]);
+    const cam = r2.rows[0];
     
     // Start worker async
     axios.post(`http://127.0.0.1:8001/start/${cam.id}`, { source: ip_address }).catch(e => console.error("Worker error HTTP start:", e.message));
@@ -144,13 +169,14 @@ app.put('/api/cameras/:id', authenticateToken, async (req, res) => {
   
   try {
     const r = await pool.query(
-      'UPDATE cameras SET ip_address=$1, place_name=$2, detections_to_run=$3 WHERE id=$4 RETURNING *',
+      'UPDATE cameras SET ip_address=?, place_name=?, detections_to_run=? WHERE id=?',
       [ip_address, place_name, JSON.stringify(detList), req.params.id]
     );
-    if (r.rows.length === 0) return res.status(404).json({ detail: "Camera not found" });
+    const r2 = await pool.query('SELECT * FROM cameras WHERE id = ?', [req.params.id]);
+    if (r2.rows.length === 0) return res.status(404).json({ detail: "Camera not found" });
     
     axios.post(`http://127.0.0.1:8001/start/${req.params.id}`, { source: ip_address }).catch(e => {});
-    res.json(r.rows[0]);
+    res.json(r2.rows[0]);
   } catch (err) {
     res.status(500).json({ detail: err.message });
   }
@@ -168,7 +194,7 @@ app.delete('/api/cameras/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/cameras', authenticateToken, async (req, res) => {
   try {
-    const { rows: cameras } = await pool.query('SELECT * FROM cameras ORDER BY id ASC');
+    const cameras = await safeRows('SELECT * FROM cameras ORDER BY id ASC', [], []);
     let workerStatusMap = {};
     try {
       // Increased to 10s to be more resilient under high worker load
@@ -228,11 +254,11 @@ app.post('/api/cameras-restart/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/stats', authenticateToken, async (req, res) => {
   const { time_range, camera_id } = req.query;
-  const hours = parseInt(time_range) || 24;
+  const hours = parseInt(time_range) || 1;
   
   try {
-    let alertQuery = `SELECT COUNT(*) FROM alerts WHERE timestamp >= NOW() - interval '${hours} hours'`;
-    let vehicleQuery = `SELECT COUNT(*) FROM vehicle_checks WHERE time_in >= NOW() - interval '${hours} hours'`;
+    let alertQuery = `SELECT COUNT(*) as count FROM alerts WHERE timestamp >= datetime('now', '-${hours} hours')`;
+    let vehicleQuery = `SELECT COUNT(*) as count FROM vehicle_checks WHERE time_in >= datetime('now', '-${hours} hours')`;
     let params = [];
 
     if (camera_id && camera_id !== 'all') {
@@ -241,14 +267,14 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
       vehicleQuery += ` AND camera_id = $1`;
     }
 
-    const alertsCount = await pool.query(alertQuery, params);
-    const vehiclesCount = await pool.query(vehicleQuery, params);
-    const activeCams = await pool.query('SELECT COUNT(*) FROM cameras WHERE is_active = true');
+    const totalAlerts = await safeCount(alertQuery, params, 0);
+    const totalVehicles = await safeCount(vehicleQuery, params, 0);
+    const activeCameraCount = await safeCount('SELECT COUNT(*) AS count FROM cameras WHERE is_active = 1', [], 0);
     
     res.json({
-      total_alerts: parseInt(alertsCount.rows[0].count),
-      total_vehicles: parseInt(vehiclesCount.rows[0].count),
-      active_cameras: parseInt(activeCams.rows[0].count)
+      total_alerts: totalAlerts,
+      total_vehicles: totalVehicles,
+      active_cameras: activeCameraCount
     });
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -263,14 +289,13 @@ app.post('/api/zones', authenticateToken, async (req, res) => {
   try {
     const actTime = activation_time ? new Date(activation_time) : null;
     const r = await pool.query(
-      'INSERT INTO restriction_zones (camera_id, polygon_points, activation_time, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
-      [camera_id, JSON.stringify(points), actTime, true]
+      'INSERT INTO restriction_zones (camera_id, polygon_points, activation_time, is_active) VALUES (?, ?, ?, ?)',
+      [Number(camera_id), JSON.stringify(points), actTime, true]
     );
-    // Trigger AI Worker Reload
     // Trigger AI Worker Reload Asynchronously
     axios.post(`http://127.0.0.1:8001/reload/${camera_id}`, {}, { timeout: 10000 }).catch(e => {});
     
-    res.json({ status: "success", zone_id: r.rows[0].id });
+    res.json({ status: "success", zone_id: r.lastInsertRowid });
   } catch (err) {
     res.status(500).json({ detail: err.message });
   }
@@ -278,8 +303,8 @@ app.post('/api/zones', authenticateToken, async (req, res) => {
 
 app.get('/api/zones/:camera_id', authenticateToken, async (req, res) => {
   try {
-    const r = await pool.query('SELECT * FROM restriction_zones WHERE camera_id=$1', [req.params.camera_id]);
-    res.json(r.rows);
+    const rows = await safeRows('SELECT * FROM restriction_zones WHERE camera_id=$1', [req.params.camera_id], []);
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ detail: err.message });
   }
@@ -305,11 +330,11 @@ app.delete('/api/zones/:id', authenticateToken, async (req, res) => {
 // Logs
 app.get('/api/alerts', authenticateToken, async (req, res) => {
   const { time_range, camera_id } = req.query;
-  const hours = parseInt(time_range) || 24;
+  const hours = parseInt(time_range) || 1;
 
   try {
-    let intrusionBase = `SELECT * FROM alerts WHERE timestamp >= NOW() - interval '${hours} hours'`;
-    let ppeBase = `SELECT * FROM ppe_violations WHERE timestamp >= NOW() - interval '${hours} hours'`;
+    let intrusionBase = `SELECT * FROM alerts WHERE timestamp >= datetime('now', '-${hours} hours')`;
+    let ppeBase = `SELECT * FROM ppe_violations WHERE timestamp >= datetime('now', '-${hours} hours')`;
     let params = [];
 
     if (camera_id && camera_id !== 'all') {
@@ -318,8 +343,8 @@ app.get('/api/alerts', authenticateToken, async (req, res) => {
       ppeBase += ` AND camera_id = $1`;
     }
 
-    const { rows: intrusions } = await pool.query(`${intrusionBase} ORDER BY timestamp DESC LIMIT 1000`, params);
-    const { rows: ppe } = await pool.query(`${ppeBase} ORDER BY timestamp DESC LIMIT 1000`, params);
+    const intrusions = await safeRows(`${intrusionBase} ORDER BY timestamp DESC LIMIT 100`, params, []);
+    const ppe = await safeRows(`${ppeBase} ORDER BY timestamp DESC LIMIT 100`, params, []);
     
     // Transform PPE to match intrusion alert format
     const transformedPpe = ppe.map(v => ({
@@ -330,7 +355,7 @@ app.get('/api/alerts', authenticateToken, async (req, res) => {
 
     const combined = [...intrusions, ...transformedPpe]
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, 1000);
+      .slice(0, 100);
 
     res.json(combined);
   } catch (err) {
@@ -339,10 +364,19 @@ app.get('/api/alerts', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/vehicles', authenticateToken, async (req, res) => {
-  const { start_date, end_date, search } = req.query;
+  const { start_date, end_date, search, time_range, camera_id } = req.query;
   try {
     let query = 'SELECT * FROM vehicle_checks WHERE 1=1';
     let params = [];
+
+    if (time_range) {
+      const hours = parseInt(time_range, 10) || 1;
+      query += ` AND time_in >= datetime('now', '-${hours} hours')`;
+    }
+    if (camera_id && camera_id !== 'all') {
+      params.push(camera_id);
+      query += ` AND camera_id = $${params.length}`;
+    }
 
     if (start_date) {
       params.push(new Date(start_date));
@@ -354,11 +388,11 @@ app.get('/api/vehicles', authenticateToken, async (req, res) => {
     }
     if (search) {
       params.push(`%${search}%`);
-      query += ` AND (plate_number ILIKE $${params.length} OR camera_name ILIKE $${params.length})`;
+      query += ` AND (plate_number LIKE ? OR camera_name LIKE ?)`;
     }
 
     query += ' ORDER BY time_in DESC LIMIT 50';
-    const { rows } = await pool.query(query, params);
+    const rows = await safeRows(query, params, []);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -367,13 +401,13 @@ app.get('/api/vehicles', authenticateToken, async (req, res) => {
 
 app.get('/api/ppe/stats', authenticateToken, async (req, res) => {
   const { time_range, camera_id } = req.query;
-  const hours = parseInt(time_range) || 24;
+  const hours = parseInt(time_range) || 1;
 
   try {
     const vTypes = ["helmet", "no_helmet", "person_with_vest", "no_vest"];
     const stats = {};
     for (const vType of vTypes) {
-      let query = `SELECT COUNT(*) FROM ppe_violations WHERE violation_type=$1 AND timestamp >= NOW() - interval '${hours} hours'`;
+      let query = `SELECT COUNT(*) as count FROM ppe_violations WHERE violation_type=? AND timestamp >= datetime('now', '-${hours} hours')`;
       let params = [vType];
       
       if (camera_id && camera_id !== 'all') {
@@ -381,8 +415,7 @@ app.get('/api/ppe/stats', authenticateToken, async (req, res) => {
         query += ` AND camera_id = $2`;
       }
       
-      const q = await pool.query(query, params);
-      stats[vType] = parseInt(q.rows[0].count);
+      stats[vType] = await safeCount(query, params, 0);
     }
     res.json(stats);
   } catch (err) {
@@ -406,11 +439,11 @@ app.get('/api/ppe/logs', authenticateToken, async (req, res) => {
     }
     if (search) {
       params.push(`%${search}%`);
-      query += ` AND (camera_name ILIKE $${params.length} OR violation_type ILIKE $${params.length})`;
+      query += ` AND (camera_name LIKE ? OR violation_type LIKE ?)`;
     }
 
     query += ' ORDER BY timestamp DESC LIMIT 100';
-    const { rows } = await pool.query(query, params);
+    const rows = await safeRows(query, params, []);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ detail: err.message });
@@ -423,7 +456,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   
   // Start active cameras in worker on boot
   try {
-    const { rows } = await pool.query('SELECT * FROM cameras WHERE is_active=true');
+    const { rows } = await pool.query('SELECT * FROM cameras WHERE is_active = 1');
     console.log(`Found ${rows.length} active cameras to wake up...`);
     for (const cam of rows) {
       setTimeout(() => {

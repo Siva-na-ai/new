@@ -6,26 +6,29 @@ import os
 import bcrypt
 from dotenv import load_dotenv
 
-# Load .env from backend directory
+# Load environment and set base directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-DB_HOST = os.getenv("DB_HOST", "192.168.0.135")
-DB_PORT = os.getenv("DB_PORT", "5432")
-# Use defaults only if not set in .env
-DB_USER = os.getenv("DB_USER") or "postgres"
-DB_PASSWORD = os.getenv("DB_PASSWORD") or "password"
-DB_NAME = os.getenv("DB_NAME") or "video_analysis"
+# SQLite Configuration for local storage
+DB_PATH = os.path.join(BASE_DIR, "video_analysis.db")
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-# If user/password are empty, simplify the URL
-if DB_USER and DB_PASSWORD:
-    SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-elif DB_USER:
-    SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-else:
-    SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Connect args needed for SQLite multithreading
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={"check_same_thread": False}
+)
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+# Enable WAL mode for better concurrency between Node and Python
+from sqlalchemy import event
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

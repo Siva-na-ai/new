@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Line, Bar } from 'react-chartjs-2'
 import { UserCheck, Bell, Video, Truck, ShieldCheck, TrendingUp, Search, Eye, Maximize2, X, Calendar, MapPin, Sun, Moon, Camera } from 'lucide-react'
 import { io } from 'socket.io-client';
@@ -42,9 +42,10 @@ const Dashboard = () => {
   const [filter, setFilter] = useState('All');
   
   // New Global Filters
-  const [selectedTimeRange, setSelectedTimeRange] = useState(24);
+  const [selectedTimeRange, setSelectedTimeRange] = useState(1);
   const [selectedCameraId, setSelectedCameraId] = useState('all');
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+  const refreshTimerRef = useRef(null);
 
   const API_BASE = '/api';
 
@@ -56,13 +57,19 @@ const Dashboard = () => {
     
     const queryParams = `?time_range=${selectedTimeRange}&camera_id=${selectedCameraId}&t=${t}`;
     
-    Promise.all([
+    Promise.allSettled([
       fetch(`${API_BASE}/alerts${queryParams}`, { headers, signal }).then(res => res.ok ? res.json() : []),
       fetch(`${API_BASE}/vehicles${queryParams}`, { headers, signal }).then(res => res.ok ? res.json() : []),
       fetch(`${API_BASE}/cameras?t=${t}`, { headers, signal }).then(res => res.ok ? res.json() : []),
       fetch(`${API_BASE}/stats${queryParams}`, { headers, signal }).then(res => res.ok ? res.json() : { total_alerts: 0, total_vehicles: 0, active_cameras: 0 }),
       fetch(`${API_BASE}/ppe/stats${queryParams}`, { headers, signal }).then(res => res.ok ? res.json() : { helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 })
-    ]).then(([alertData, checkData, camData, statData, ppeData]) => {
+    ]).then((results) => {
+      const alertData = results[0].status === 'fulfilled' ? results[0].value : [];
+      const checkData = results[1].status === 'fulfilled' ? results[1].value : [];
+      const camData = results[2].status === 'fulfilled' ? results[2].value : [];
+      const statData = results[3].status === 'fulfilled' ? results[3].value : { total_alerts: 0, total_vehicles: 0, active_cameras: 0 };
+      const ppeData = results[4].status === 'fulfilled' ? results[4].value : { helmet: 0, no_helmet: 0, vest: 0, no_vest: 0 };
+
       setAlerts(Array.isArray(alertData) ? alertData : []);
       setVehicleChecks(Array.isArray(checkData) ? checkData : []);
       setCameras(Array.isArray(camData) ? camData : []);
@@ -160,11 +167,15 @@ const Dashboard = () => {
     fetchData(controller.signal);
     
     const socket = io();
+    const queueRefresh = () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => fetchData(controller.signal), 400);
+    };
     socket.on('new_alert', (newAlert) => {
-       fetchData(controller.signal); 
+       queueRefresh();
     });
     socket.on('new_vehicle', (newVehicle) => {
-       fetchData(controller.signal);
+       queueRefresh();
     });
     
     const interval = setInterval(() => fetchData(controller.signal), 60000);
@@ -172,6 +183,7 @@ const Dashboard = () => {
     return () => {
        controller.abort();
        socket.disconnect();
+       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
        clearInterval(interval);
     };
   }, [selectedTimeRange, selectedCameraId]);

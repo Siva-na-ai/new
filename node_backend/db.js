@@ -1,22 +1,43 @@
-const { Pool } = require('pg');
+const Database = require('better-sqlite3');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../backend/.env') });
 
-const pool = new Pool({
-  host: process.env.DB_HOST || "192.168.0.135",
-  port: process.env.DB_PORT || 5432,
-  user: process.env.DB_USER || "postgres",
-  password: process.env.DB_PASSWORD || "password",
-  database: process.env.DB_NAME || "video_analysis",
-  // Resilience settings
-  connectionTimeoutMillis: 5000, 
-  idleTimeoutMillis: 30000,
-  max: 20
-});
+// Locate the shared SQLite database file
+const dbPath = path.resolve(__dirname, '../backend/video_analysis.db');
+const db = new Database(dbPath, { verbose: null });
 
-// Avoid process crash on unexpected DB errors
-pool.on('error', (err) => {
-  console.error('CRITICAL: Unexpected database pool error', err);
-});
+// Enable WAL mode for multi-process concurrency
+db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+
+// Mimic the 'pg' pool.query interface for minimal changes in server.js
+const pool = {
+  query: async (text, params = []) => {
+    try {
+      // Map params to handle Date and Boolean objects
+      const processedParams = params.map(p => {
+        if (p instanceof Date) return p.toISOString();
+        if (typeof p === 'boolean') return p ? 1 : 0;
+        return p;
+      });
+      
+      // Convert PostgreSQL $1, $2... placeholders to SQLite ?
+      const sqliteQuery = text.replace(/\$\d+/g, '?');
+      
+      const statement = db.prepare(sqliteQuery);
+      
+      if (sqliteQuery.trim().toUpperCase().startsWith('SELECT')) {
+        const rows = statement.all(...processedParams);
+        return { rows };
+      } else {
+        const info = statement.run(...processedParams);
+        return { rows: [], lastInsertRowid: info.lastInsertRowid, changes: info.changes };
+      }
+    } catch (err) {
+      console.error('Database Error:', err.message);
+      console.error('Query:', text);
+      throw err;
+    }
+  }
+};
 
 module.exports = pool;

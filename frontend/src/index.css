@@ -381,7 +381,7 @@ button[style*='rgba(255,0,0']:hover {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(15, 23, 42, 0.9);
+  background: var(--bg-card); /* Use theme-aware background */
   z-index: 9999;
   display: flex;
   align-items: center;
@@ -391,8 +391,8 @@ button[style*='rgba(255,0,0']:hover {
 }
 
 .alarm-card {
-  background: #0f172a;
-  border: 2px solid #f43f5e;
+  background: var(--bg-dark); /* Use theme-aware background */
+  border: 4px solid #f43f5e; /* Thicker border for better visibility */
   border-radius: 24px;
   padding: 40px;
   text-align: center;
@@ -499,5 +499,14 @@ button[style*='rgba(255,0,0']:hover {
 :root.light-theme select {
   background: rgba(0, 0, 0, 0.05);
   color: var(--text-main);
+}
+
+:root.light-theme .alarm-overlay {
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+
+:root.light-theme .alarm-card {
+  box-shadow: 0 0 60px rgba(244, 63, 94, 0.2);
+  border-width: 2px;
 }
 

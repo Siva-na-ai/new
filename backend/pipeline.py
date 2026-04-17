@@ -100,15 +100,24 @@ class Pipeline:
             self.zones = []
             for rz in raw_zones:
                 zp_raw = rz.polygon_points
+                
+                # SQLite may return JSON as string
+                if isinstance(zp_raw, str):
+                    try:
+                        import json
+                        zp_raw = json.loads(zp_raw)
+                    except:
+                        pass
+
                 if isinstance(zp_raw, dict):
                     # New Format: { "points": [], "width": 1280, "height": 720 }
                     points = zp_raw.get("points", [])
-                    ref_w = zp_raw.get("width", 640) # Default to 640 for user's latest
+                    ref_w = zp_raw.get("width", 640)
                     ref_h = zp_raw.get("height", 480)
                 else:
                     # Old Format: [ [x,y], ... ]
-                    points = zp_raw
-                    ref_w = 640 # Heuristic for existing zones based on user logs
+                    points = zp_raw if zp_raw else []
+                    ref_w = 640 
                     ref_h = 480
                 
                 # We store a "normalized" version of the points in self.zones 

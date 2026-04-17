@@ -16,8 +16,9 @@ const RestrictionArea = () => {
     fetch('/api/cameras', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
-      .then(data => setCameras(data));
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setCameras(Array.isArray(data) ? data : []))
+      .catch(() => setCameras([]));
   }, []);
 
   const fetchZones = (camId) => {
@@ -84,8 +85,8 @@ const RestrictionArea = () => {
           zp.forEach((p, i) => {
             // Check if point is normalized (0-1) or absolute pixels (legacy)
             const isNorm = p[0] <= 1.0 && p[1] <= 1.0;
-            const px = isNorm ? p[0] * imgSize.w : p[0] * scale_x;
-            const py = isNorm ? p[1] * imgSize.h : p[1] * scale_y;
+            const px = isNorm ? p[0] * imgSize.w : (p[0] / ref_w) * imgSize.w;
+            const py = isNorm ? p[1] * imgSize.h : (p[1] / ref_h) * imgSize.h;
             
             if (i === 0) ctx.moveTo(px, py);
             else ctx.lineTo(px, py);
@@ -215,7 +216,7 @@ const RestrictionArea = () => {
           <div className="glass-card">
             <h4 className="mega-bold-white" style={{ marginBottom: '16px', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Camera Selection</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {cameras.map(cam => (
+              {Array.isArray(cameras) && cameras.map(cam => (
                 <div 
                   key={cam.id} 
                   onClick={() => {setSelectedCam(cam); setPoints([])}}

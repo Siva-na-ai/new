@@ -309,14 +309,14 @@ const Layout = ({ loggedUser, onLogout }) => {
                 <AlertTriangle size={48} color="#f43f5e" className="pulse-red" style={{ borderRadius: '50%' }} />
               </div>
               <h2 style={{ color: '#f43f5e', fontSize: '28px', fontWeight: 800, textTransform: 'uppercase' }}>Security Breach</h2>
-              <p style={{ color: '#94a3b8', marginTop: '8px', fontWeight: 700 }}>Restricted area violation detected!</p>
+              <p style={{ color: 'var(--text-dim)', marginTop: '8px', fontWeight: 700 }}>Restricted area violation detected!</p>
             </div>
 
-            <div style={{ background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '12px', marginBottom: '32px', textAlign: 'left' }}>
-              <div style={{ fontSize: '12px', color: '#64748b', textTransform: 'uppercase', marginBottom: '4px' }}>Camera Source</div>
-              <div style={{ fontWeight: 700, fontSize: '16px' }}>{latestAlert?.camera_name || 'Unknown Camera'}</div>
-              <div style={{ fontSize: '12px', color: '#64748b', textTransform: 'uppercase', marginTop: '12px', marginBottom: '4px' }}>Timestamp</div>
-              <div style={{ fontWeight: 600 }}>{latestAlert?.timestamp ? new Date(latestAlert.timestamp).toLocaleTimeString() : 'Just now'}</div>
+            <div style={{ background: 'var(--glass)', padding: '16px', borderRadius: '12px', marginBottom: '32px', textAlign: 'left', border: '1px solid var(--border)' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '4px', opacity: 0.8 }}>Camera Source</div>
+              <div style={{ fontWeight: 800, fontSize: '16px', color: 'var(--text-main)' }}>{latestAlert?.camera_name || 'Unknown Camera'}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-dim)', textTransform: 'uppercase', marginTop: '12px', marginBottom: '4px', opacity: 0.8 }}>Timestamp</div>
+              <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>{latestAlert?.timestamp ? new Date(latestAlert.timestamp).toLocaleTimeString() : 'Just now'}</div>
             </div>
 
             <button 
@@ -338,7 +338,7 @@ const Layout = ({ loggedUser, onLogout }) => {
             </button>
             <button 
               onClick={() => { dismissAlarm(); navigate('/dashboard'); }}
-              style={{ width: '100%', height: '48px', background: 'transparent', color: '#94a3b8', border: 'none', marginTop: '12px', cursor: 'pointer', fontSize: '14px', fontWeight: 700 }}
+              style={{ width: '100%', height: '48px', background: 'transparent', color: 'var(--text-dim)', border: 'none', marginTop: '12px', cursor: 'pointer', fontSize: '14px', fontWeight: 800 }}
             >
               View Full Report - Analysis History
             </button>
